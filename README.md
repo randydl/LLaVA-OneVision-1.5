@@ -368,10 +368,17 @@ Thanks so much to all of our amazing contributors!
 	<tbody>
 		<tr>
             <td align="center">
-                <a href="https://github.com/fdcp">
-                    <img src="https://avatars.githubusercontent.com/u/15667917?v=4" width="80;" alt="fdcp"/>
+                <a href="https://github.com/GeoffreyChen777">
+                    <img src="https://avatars.githubusercontent.com/u/14183213?v=4" width="80;" alt="GeoffreyChen777"/>
                     <br />
-                    <sub><b>fdcp</b></sub>
+                    <sub><b>GeoffreyChen777</b></sub>
+                </a>
+            </td>
+            <td align="center">
+                <a href="https://github.com/Luodian">
+                    <img src="https://avatars.githubusercontent.com/u/15847405?v=4" width="80;" alt="Luodian"/>
+                    <br />
+                    <sub><b>Luodian</b></sub>
                 </a>
             </td>
             <td align="center">
@@ -410,12 +417,14 @@ Thanks so much to all of our amazing contributors!
                 </a>
             </td>
             <td align="center">
-                <a href="https://github.com/Luodian">
-                    <img src="https://avatars.githubusercontent.com/u/15847405?v=4" width="80;" alt="Luodian"/>
+                <a href="https://github.com/fdcp">
+                    <img src="https://avatars.githubusercontent.com/u/15667917?v=4" width="80;" alt="fdcp"/>
                     <br />
-                    <sub><b>Luodian</b></sub>
+                    <sub><b>fdcp</b></sub>
                 </a>
             </td>
+		</tr>
+		<tr>
             <td align="center">
                 <a href="https://github.com/killTheHostage">
                     <img src="https://avatars.githubusercontent.com/u/16442720?v=4" width="80;" alt="killTheHostage"/>
@@ -423,8 +432,6 @@ Thanks so much to all of our amazing contributors!
                     <sub><b>killTheHostage</b></sub>
                 </a>
             </td>
-		</tr>
-		<tr>
             <td align="center">
                 <a href="https://github.com/mathCrazyy">
                     <img src="https://avatars.githubusercontent.com/u/20607153?v=4" width="80;" alt="mathCrazyy"/>
