@@ -1,39 +1,28 @@
-# coding=utf-8
-# Copyright 2025 the HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-"""LLaVA-OneVision 2.0 model implementation."""
-
 from dataclasses import dataclass
-from typing import Any, Optional, Union, Tuple
+from typing import Any, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 from torch.nn import LayerNorm
 
+from transformers import AutoModel
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
-from transformers.modeling_outputs import ModelOutput
+from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling, ModelOutput
 from transformers.modeling_utils import PreTrainedModel
-from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
-from transformers import AutoModel
-from .configuration_llava_onevision2 import LlavaOnevision2Config, LlavaOnevision2VisionConfig
-from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling
 from transformers.models.siglip.modeling_siglip import SiglipMLP
-from transformers.utils import replace_return_docstrings, is_flash_attn_2_available
+from transformers.processing_utils import Unpack
+from transformers.utils import (
+    TransformersKwargs,
+    auto_docstring,
+    can_return_tuple,
+    is_flash_attn_2_available,
+    replace_return_docstrings,
+)
+
+from .configuration_llava_onevision2 import LlavaOnevision2Config, LlavaOnevision2VisionConfig
+
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func
@@ -90,11 +79,13 @@ class LlavaOnevision2CausalLMOutputWithPast(ModelOutput):
 # Vision Rotary Embedding
 # ---------------------------------------------------------------------------
 
+
 class VisionRotaryEmbedding(nn.Module):
     """
     3D (T,H,W) Rotary frequency constructor with 4:6:6 split.
     Supports both grid_thw-based and explicit position-based RoPE computation.
     """
+
     def __init__(self, config: LlavaOnevision2VisionConfig):
         super().__init__()
         head_dim = config.hidden_size // config.num_attention_heads
@@ -114,17 +105,29 @@ class VisionRotaryEmbedding(nn.Module):
         self.h_size = 6 * unit
         self.w_size = 6 * unit
 
-        self.register_buffer("inv_freq_t", 1.0 / (base ** (torch.arange(self.t_size, dtype=torch.float32) / self.t_size)), persistent=False)
-        self.register_buffer("inv_freq_h", 1.0 / (base ** (torch.arange(self.h_size, dtype=torch.float32) / self.h_size)), persistent=False)
-        self.register_buffer("inv_freq_w", 1.0 / (base ** (torch.arange(self.w_size, dtype=torch.float32) / self.w_size)), persistent=False)
+        self.register_buffer(
+            "inv_freq_t",
+            1.0 / (base ** (torch.arange(self.t_size, dtype=torch.float32) / self.t_size)),
+            persistent=False,
+        )
+        self.register_buffer(
+            "inv_freq_h",
+            1.0 / (base ** (torch.arange(self.h_size, dtype=torch.float32) / self.h_size)),
+            persistent=False,
+        )
+        self.register_buffer(
+            "inv_freq_w",
+            1.0 / (base ** (torch.arange(self.w_size, dtype=torch.float32) / self.w_size)),
+            persistent=False,
+        )
 
     def forward(self, grid_thw: torch.Tensor) -> torch.Tensor:
         """
         Compute rotary position embeddings from grid_thw (Qwen2VL style).
-        
+
         Args:
             grid_thw: [num_samples, 3] tensor with [t, h, w] for each sample
-            
+
         Returns:
             freqs: [total_seq_len, half] tensor of position frequencies
         """
@@ -132,34 +135,34 @@ class VisionRotaryEmbedding(nn.Module):
         inv_t = self.inv_freq_t.to(device=device)
         inv_h = self.inv_freq_h.to(device=device)
         inv_w = self.inv_freq_w.to(device=device)
-        
+
         all_freqs = []
         for sample_thw in grid_thw:
             t, h, w = sample_thw[0].item(), sample_thw[1].item(), sample_thw[2].item()
-            
+
             # Compute frequency tables
             ft = torch.outer(torch.arange(t, device=device, dtype=torch.float32), inv_t)
             fh = torch.outer(torch.arange(h, device=device, dtype=torch.float32), inv_h)
             fw = torch.outer(torch.arange(w, device=device, dtype=torch.float32), inv_w)
-            
+
             # Build position indices for this sample
             t_ids = torch.arange(t, device=device).repeat_interleave(h * w)
             h_ids = torch.arange(h, device=device).repeat_interleave(w).repeat(t)
             w_ids = torch.arange(w, device=device).repeat(h).repeat(t)
-            
+
             # Concatenate frequencies: [seq_len, half]
             sample_freqs = torch.cat([ft[t_ids], fh[h_ids], fw[w_ids]], dim=-1)
             all_freqs.append(sample_freqs)
-        
+
         return torch.cat(all_freqs, dim=0)
 
     def forward_from_positions(self, patch_positions: torch.Tensor) -> torch.Tensor:
         """
         Compute rotary position embeddings from explicit patch positions.
-        
+
         Args:
             patch_positions: [seq_len, 3] tensor with [t, h, w] positions for each patch
-            
+
         Returns:
             freqs: [seq_len, half] tensor of position frequencies
         """
@@ -167,27 +170,27 @@ class VisionRotaryEmbedding(nn.Module):
         inv_t = self.inv_freq_t.to(device=device)
         inv_h = self.inv_freq_h.to(device=device)
         inv_w = self.inv_freq_w.to(device=device)
-        
+
         t_pos = patch_positions[:, 0].float()
         h_pos = patch_positions[:, 1].float()
         w_pos = patch_positions[:, 2].float()
-        
+
         ft = torch.outer(t_pos, inv_t)
         fh = torch.outer(h_pos, inv_h)
         fw = torch.outer(w_pos, inv_w)
-        
+
         return torch.cat([ft, fh, fw], dim=-1)
 
     def forward_with_thw(self, t: int, h: int, w: int, device=None) -> torch.Tensor:
         """
         Compute rotary position embeddings from explicit t, h, w dimensions.
-        
+
         Args:
             t: Number of temporal frames
             h: Number of height patches
             w: Number of width patches
             device: Target device
-            
+
         Returns:
             freqs: [t*h*w, half] tensor of position frequencies
         """
@@ -214,11 +217,13 @@ class VisionRotaryEmbedding(nn.Module):
 # Patch Embedding
 # ---------------------------------------------------------------------------
 
+
 class LlavaViTEmbeddings(nn.Module):
     """
     Patch embedding layer that converts images to patch embeddings.
     Supports both 4D (B, C, H, W) and 5D (B, C, T, H, W) inputs.
     """
+
     def __init__(self, config: LlavaOnevision2VisionConfig):
         super().__init__()
         self.config = config
@@ -235,11 +240,10 @@ class LlavaViTEmbeddings(nn.Module):
         )
 
     def forward(self, pixel_values: torch.FloatTensor) -> torch.Tensor:
-
         target_dtype = self.patch_embedding.weight.dtype
         # Handle 4D (B, C, H, W) or 5D (B, C, T, H, W) inputs
         if pixel_values.dim() == 4:
-             pixel_values = pixel_values.unsqueeze(2) # (B, C, 1, H, W)
+            pixel_values = pixel_values.unsqueeze(2)  # (B, C, 1, H, W)
 
         batch_size, channels, t_frames, height, width = pixel_values.shape
 
@@ -248,7 +252,7 @@ class LlavaViTEmbeddings(nn.Module):
 
         # Patch Embed
         embeddings = self.patch_embedding(x_2d.to(dtype=target_dtype))  # (B*T, C, Hp, Wp)
-        embeddings = embeddings.flatten(2).transpose(1, 2) # (B*T, L_frame, C)
+        embeddings = embeddings.flatten(2).transpose(1, 2)  # (B*T, L_frame, C)
 
         # Flatten all patches
         total_patches = t_frames * (height // self.patch_size) * (width // self.patch_size)
@@ -261,11 +265,13 @@ class LlavaViTEmbeddings(nn.Module):
 # Patch Merger
 # ---------------------------------------------------------------------------
 
+
 class LlavaOnevision2VisionPatchMerger(nn.Module):
     """
     Patch merger that merges spatial_merge_size x spatial_merge_size patches into one.
     Supports both packing format and standard batch format.
     """
+
     def __init__(
         self,
         dim: int,
@@ -283,58 +289,68 @@ class LlavaOnevision2VisionPatchMerger(nn.Module):
         )
         self.spatial_merge_size = spatial_merge_size
 
-    def forward(self, x: torch.Tensor, grid_thw: Optional[torch.Tensor] = None, 
-                height: Optional[int] = None, width: Optional[int] = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        grid_thw: Optional[torch.Tensor] = None,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
+    ) -> torch.Tensor:
         """
         Merge patches with support for both packing and batch formats.
-        
+
         Packing format:
             Input: [total_seq_len, hidden_size] with grid_thw defining sample boundaries
             Output: [total_merged_seq_len, dim]
-            
+
         Batch format:
             Input: [B, N, C] where N = H * W
             Output: [B, N // (spatial_merge_size^2), dim]
         """
         merge_size = self.spatial_merge_size
-        
+
         # ============================================================
         # 【PACKING FORMAT】: Input is [seq_len, C] with grid_thw
         # ============================================================
         if grid_thw is not None and x.dim() == 2:
             x = self.ln_q(x)
-            
+
             all_merged = []
             start_idx = 0
-            
+
             for sample_thw in grid_thw:
                 t, h, w = sample_thw[0].item(), sample_thw[1].item(), sample_thw[2].item()
                 seq_len = t * h * w
-                sample_x = x[start_idx:start_idx + seq_len]  # [t*h*w, C]
-                
+                sample_x = x[start_idx : start_idx + seq_len]  # [t*h*w, C]
+
                 # Validate divisibility
-                assert h % merge_size == 0 and w % merge_size == 0, \
-                    f"Grid size ({h}, {w}) not divisible by merge_size {merge_size}"
-                
+                assert (
+                    h % merge_size == 0 and w % merge_size == 0
+                ), f"Grid size ({h}, {w}) not divisible by merge_size {merge_size}"
+
                 C = sample_x.shape[-1]
                 new_h = h // merge_size
                 new_w = w // merge_size
-                
+
                 # Reshape: [t*h*w, C] -> [t, h, w, C]
                 sample_x = sample_x.view(t, h, w, C)
-                
+
                 # Merge 2x2 spatial patches
                 # [t, h, w, C] -> [t, new_h, merge_size, new_w, merge_size, C]
                 sample_x = sample_x.view(t, new_h, merge_size, new_w, merge_size, C)
-                sample_x = sample_x.permute(0, 1, 3, 2, 4, 5).contiguous()  # [t, new_h, new_w, merge_size, merge_size, C]
-                sample_x = sample_x.view(t * new_h * new_w, merge_size * merge_size * C)  # [t*new_h*new_w, hidden_size]
-                
+                sample_x = sample_x.permute(
+                    0, 1, 3, 2, 4, 5
+                ).contiguous()  # [t, new_h, new_w, merge_size, merge_size, C]
+                sample_x = sample_x.view(
+                    t * new_h * new_w, merge_size * merge_size * C
+                )  # [t*new_h*new_w, hidden_size]
+
                 all_merged.append(sample_x)
                 start_idx += seq_len
-            
+
             merged_x = torch.cat(all_merged, dim=0)  # [total_merged_seq_len, hidden_size]
             return self.mlp(merged_x)
-        
+
         # ============================================================
         # 【BATCH FORMAT】: Input is [B, N, C]
         # ============================================================
@@ -349,8 +365,9 @@ class LlavaOnevision2VisionPatchMerger(nn.Module):
         assert H * W == N, f"Height {H} * Width {W} != N {N}"
 
         # Validate divisibility by merge_size
-        assert H % merge_size == 0 and W % merge_size == 0, \
-            f"Grid size ({H}, {W}) not divisible by merge_size {merge_size}"
+        assert (
+            H % merge_size == 0 and W % merge_size == 0
+        ), f"Grid size ({H}, {W}) not divisible by merge_size {merge_size}"
 
         # Apply LayerNorm
         x = self.ln_q(x)
@@ -368,26 +385,26 @@ class LlavaOnevision2VisionPatchMerger(nn.Module):
         # Project to LLM dimension
         x = self.mlp(x)
         return x
-    
+
     def _infer_hw(self, N: int) -> Tuple[int, int]:
         """Infer height and width from number of patches."""
         merge_size = self.spatial_merge_size
-        sqrt_n = int(N ** 0.5)
-        
+        sqrt_n = int(N**0.5)
+
         # Try to find factors closest to square
         for h in range(sqrt_n, 0, -1):
             if N % h == 0:
                 w = N // h
                 if h % merge_size == 0 and w % merge_size == 0:
                     return h, w
-        
+
         # Fallback: try all factors
         for h in range(1, N + 1):
             if N % h == 0:
                 w = N // h
                 if h % merge_size == 0 and w % merge_size == 0:
                     return h, w
-        
+
         raise ValueError(f"Cannot find valid H, W for N={N} with merge_size={merge_size}")
 
 
@@ -400,12 +417,12 @@ def rotate_half(x):
     x_odd = x[..., 1::2]
     return torch.stack((-x_odd, x_even), dim=-1).flatten(-2)
 
+
 def get_norm_layer(config):
     if config.layer_norm_type == "rms_norm":
         return nn.RMSNorm(config.hidden_size, eps=config.layer_norm_eps)
     else:
         return nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-
 
 
 def apply_rotary_pos_emb(q, k, freqs):
@@ -431,6 +448,7 @@ class LlavaViTFlashAttention2(nn.Module):
     """
     Multi-headed attention with RoPE support using Flash Attention 2.
     """
+
     def __init__(self, config: LlavaOnevision2VisionConfig):
         super().__init__()
         self.config = config
@@ -458,7 +476,12 @@ class LlavaViTFlashAttention2(nn.Module):
         Forward pass using Flash Attention 2.
         """
         batch_size, q_len, _ = hidden_states.size()
-        q, k, v = self.qkv(hidden_states).reshape(batch_size, q_len, 3, self.num_heads, self.head_dim).permute(2, 0, 1, 3, 4).unbind(0)
+        q, k, v = (
+            self.qkv(hidden_states)
+            .reshape(batch_size, q_len, 3, self.num_heads, self.head_dim)
+            .permute(2, 0, 1, 3, 4)
+            .unbind(0)
+        )
 
         # Flash Attention requires (B, L, H, D) format
         query_states = q
@@ -501,6 +524,7 @@ class LlavaViTFlashAttention2(nn.Module):
 
 class LlavaViTEncoderLayer(nn.Module):
     """Vision encoder layer with pre-norm and Flash Attention 2."""
+
     def __init__(self, config: LlavaOnevision2VisionConfig):
         super().__init__()
         self.embed_dim = config.hidden_size
@@ -516,7 +540,6 @@ class LlavaViTEncoderLayer(nn.Module):
         rotary_pos_emb: Optional[torch.Tensor] = None,
         output_attentions: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-
         residual = hidden_states
         hidden_states = self.layer_norm1(hidden_states)
 
@@ -536,6 +559,7 @@ class LlavaViTEncoderLayer(nn.Module):
         outputs = (hidden_states, attn_weights) if output_attentions else (hidden_states,)
         return outputs
 
+
 class LlavaViTEncoder(nn.Module):
     def __init__(self, config: LlavaOnevision2VisionConfig):
         super().__init__()
@@ -553,7 +577,6 @@ class LlavaViTEncoder(nn.Module):
         output_hidden_states: bool = False,
         return_dict: bool = True,
     ) -> Union[Tuple, BaseModelOutput]:
-
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
 
@@ -594,6 +617,53 @@ class LlavaViTEncoder(nn.Module):
             attentions=all_self_attentions,
         )
 
+    def forward_debug(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        rotary_pos_emb: Optional[torch.Tensor] = None,
+    ) -> dict:
+        """
+        Forward pass with layer-by-layer debug outputs for consistency checking.
+
+        Returns:
+            dict: Contains:
+                - 'input_hidden_states': Input to the encoder
+                - 'input_rotary_pos_emb': Rotary position embeddings input
+                - 'layer_outputs': Dict mapping layer index to output after that layer
+                - 'final_output': Final encoder output
+        """
+        output = {}
+
+        # Save input
+        output["input_hidden_states"] = hidden_states.clone()
+        if rotary_pos_emb is not None:
+            output["input_rotary_pos_emb"] = rotary_pos_emb.clone()
+
+        # Layer-by-layer outputs
+        layer_outputs = {}
+
+        for layer_idx, layer in enumerate(self.layers):
+            # Save input to this layer
+            layer_outputs[f"layer_{layer_idx}_input"] = hidden_states.clone()
+
+            # Forward through layer
+            layer_result = layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                rotary_pos_emb=rotary_pos_emb,
+                output_attentions=False,
+            )
+            hidden_states = layer_result[0]
+
+            # Save output of this layer
+            layer_outputs[f"layer_{layer_idx}_output"] = hidden_states.clone()
+
+        output["layer_outputs"] = layer_outputs
+        output["final_output"] = hidden_states.clone()
+
+        return output
+
 
 class LlavaOnevision2PreTrainedModel(PreTrainedModel):
     config_class = LlavaOnevision2Config
@@ -612,10 +682,12 @@ class LlavaOnevision2PreTrainedModel(PreTrainedModel):
             # torch.nn.init.normal_(module.class_embedding, mean=0.0, std=std_cls)
             # torch.nn.init.normal_(module.class_pos_emb, mean=0.0, std=std_cls)
 
+
 class Siglip2MultiheadAttentionPoolingHead(nn.Module):
     """
     Multi-Head Attention Pooling with a learned probe (PMA-style).
     """
+
     def __init__(self, config: LlavaOnevision2VisionConfig):
         super().__init__()
         self.embed_dim = config.hidden_size
@@ -637,7 +709,9 @@ class Siglip2MultiheadAttentionPoolingHead(nn.Module):
         return attn_output[:, 0]
 
 
-def interpolate_frame_indices(frame_indices: torch.Tensor, total_frames: torch.Tensor, target_frames: int = 64) -> torch.Tensor:
+def interpolate_frame_indices(
+    frame_indices: torch.Tensor, total_frames: torch.Tensor, target_frames: int = 64
+) -> torch.Tensor:
     """
     Interpolate frame indices from the original video frame count to the target frame count.
 
@@ -672,48 +746,45 @@ def interpolate_frame_indices(frame_indices: torch.Tensor, total_frames: torch.T
 def compute_patch_positions_from_grid_thw(grid_thw: torch.Tensor) -> torch.Tensor:
     """
     Compute patch positions from grid_thw for RoPE calculation.
-    
+
     Args:
         grid_thw: [num_samples, 3] tensor with [t, h, w] for each sample
-        
+
     Returns:
         patch_positions: [total_seq_len, 3] tensor with [t, h, w] position for each patch
     """
     device = grid_thw.device
     all_positions = []
-    
+
     for sample_thw in grid_thw:
         t, h, w = sample_thw[0].item(), sample_thw[1].item(), sample_thw[2].item()
-        
+
         # Build position indices
         t_ids = torch.arange(t, device=device).repeat_interleave(h * w)
         h_ids = torch.arange(h, device=device).repeat_interleave(w).repeat(t)
         w_ids = torch.arange(w, device=device).repeat(h).repeat(t)
-        
+
         positions = torch.stack([t_ids, h_ids, w_ids], dim=-1)  # [t*h*w, 3]
         all_positions.append(positions)
-    
+
     return torch.cat(all_positions, dim=0)
 
 
 def compute_patch_positions_with_interpolated_temporal(
-    interpolated_indices: torch.Tensor,
-    h_patches: int,
-    w_patches: int,
-    device: torch.device
+    interpolated_indices: torch.Tensor, h_patches: int, w_patches: int, device: torch.device
 ) -> torch.Tensor:
     """
     Compute patch positions with interpolated temporal positions for RoPE.
-    
+
     This function computes patch positions where the temporal positions are
     based on the interpolated frame indices.
-    
+
     Args:
         interpolated_indices: [B, num_frames] Interpolated frame indices in 64-frame context
         h_patches: Number of patches in height dimension
         w_patches: Number of patches in width dimension
         device: Target device
-    
+
     Returns:
         visible_indices: Tensor of shape (B, total_patches) with flattened patch indices
     """
@@ -738,15 +809,17 @@ def compute_patch_positions_with_interpolated_temporal(
 # Vision Model
 # ---------------------------------------------------------------------------
 
+
 class LlavaOnevision2VisionPretrainedModel(LlavaOnevision2PreTrainedModel):
     """
     LLaVA-OneVision 2.0 Vision Model.
-    
+
     Supports:
         - 4D input: [B, C, H, W] for images
         - 5D input: [B, C, T, H, W] for videos
         - visible_indices for sparse patch selection
     """
+
     def __init__(self, config: LlavaOnevision2VisionConfig):
         super().__init__(config)
         self.config = config
@@ -787,7 +860,7 @@ class LlavaOnevision2VisionPretrainedModel(LlavaOnevision2PreTrainedModel):
     ) -> Union[Tuple, BaseModelOutputWithPooling]:
         r"""
         Forward pass for vision model.
-        
+
         Args:
             pixel_values: 4D [B, C, H, W] or 5D [B, C, T, H, W] tensor
             grid_thw: Optional grid sizes for each sample
@@ -796,13 +869,19 @@ class LlavaOnevision2VisionPretrainedModel(LlavaOnevision2PreTrainedModel):
             output_hidden_states: Whether to return all hidden states
             return_dict: Whether to return a ModelOutput instead of tuple
             skip_merger: If True, skip patch merger
-        
+
         Returns:
             BaseModelOutputWithPooling with last_hidden_state
         """
-        output_attentions = output_attentions if output_attentions is not None else getattr(self.config, 'output_attentions', False)
-        output_hidden_states = output_hidden_states if output_hidden_states is not None else getattr(self.config, 'output_hidden_states', False)
-        return_dict = return_dict if return_dict is not None else getattr(self.config, 'use_return_dict', True)
+        output_attentions = (
+            output_attentions if output_attentions is not None else getattr(self.config, "output_attentions", False)
+        )
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else getattr(self.config, "output_hidden_states", False)
+        )
+        return_dict = return_dict if return_dict is not None else getattr(self.config, "use_return_dict", True)
 
         # Handle special case for video input
         if pixel_values.shape[0] == 8 and pixel_values.dim() == 4:
@@ -826,16 +905,19 @@ class LlavaOnevision2VisionPretrainedModel(LlavaOnevision2PreTrainedModel):
         # 2. Visible Indices Handling
         if visible_indices is None or (isinstance(visible_indices, list) and visible_indices[0] is None):
             if t_frames == 1:
-                visible_indices = torch.arange(total_patches, device=pixel_values.device).unsqueeze(0).expand(batch_size, -1)
+                visible_indices = (
+                    torch.arange(total_patches, device=pixel_values.device).unsqueeze(0).expand(batch_size, -1)
+                )
             else:
                 # Compute interpolated frame indices for video
                 frame_indices = torch.arange(t_frames).unsqueeze(0).to(pixel_values.device)
                 total_frames_tensor = torch.tensor([t_frames]).to(pixel_values.device)
-                interpolated_indices = interpolate_frame_indices(
-                    frame_indices, total_frames_tensor, 64
-                )
+                interpolated_indices = interpolate_frame_indices(frame_indices, total_frames_tensor, 64)
                 visible_indices = compute_patch_positions_with_interpolated_temporal(
-                    interpolated_indices, height // self.config.patch_size, width // self.config.patch_size, pixel_values.device
+                    interpolated_indices,
+                    height // self.config.patch_size,
+                    width // self.config.patch_size,
+                    pixel_values.device,
                 )
         else:
             # Handle visible_indices as list
@@ -847,10 +929,12 @@ class LlavaOnevision2VisionPretrainedModel(LlavaOnevision2PreTrainedModel):
                     if visible_indices.dim() == 1:
                         visible_indices = visible_indices.unsqueeze(0)
                 else:
-                    visible_indices = torch.stack([v if isinstance(v, torch.Tensor) else torch.tensor(v) for v in visible_indices])
+                    visible_indices = torch.stack(
+                        [v if isinstance(v, torch.Tensor) else torch.tensor(v) for v in visible_indices]
+                    )
             elif not isinstance(visible_indices, torch.Tensor):
                 visible_indices = torch.tensor(visible_indices, device=pixel_values.device)
-            
+
             visible_indices = visible_indices.to(pixel_values.device)
 
         # Gather visible patches for images (t_frames == 1)
@@ -863,7 +947,7 @@ class LlavaOnevision2VisionPretrainedModel(LlavaOnevision2PreTrainedModel):
             t=64 if t_frames > 1 else 1,
             h=height // self.config.patch_size,
             w=width // self.config.patch_size,
-            device=pixel_values.device
+            device=pixel_values.device,
         )
         freqs_visible = freqs_full[visible_indices]
 
@@ -897,9 +981,11 @@ class LlavaOnevision2VisionPretrainedModel(LlavaOnevision2PreTrainedModel):
             pooled_output = None
             if self.head is not None:
                 pooled_output = self.head(sequence_output)
-            
+
             if not return_dict:
-                return (sequence_output, pooled_output) + (encoder_outputs.hidden_states if output_hidden_states else None,)
+                return (sequence_output, pooled_output) + (
+                    encoder_outputs.hidden_states if output_hidden_states else None,
+                )
             return BaseModelOutputWithPooling(
                 last_hidden_state=sequence_output,
                 pooler_output=pooled_output,
@@ -911,9 +997,7 @@ class LlavaOnevision2VisionPretrainedModel(LlavaOnevision2PreTrainedModel):
         h_patches = height // self.config.patch_size
         w_patches = width // self.config.patch_size
         grid_thw = torch.tensor(
-            [[t_frames, h_patches, w_patches]] * batch_size,
-            dtype=torch.long,
-            device=pixel_values.device
+            [[t_frames, h_patches, w_patches]] * batch_size, dtype=torch.long, device=pixel_values.device
         )
 
         # Patch merger (batch format)
@@ -928,6 +1012,155 @@ class LlavaOnevision2VisionPretrainedModel(LlavaOnevision2PreTrainedModel):
             hidden_states=encoder_outputs.hidden_states if output_hidden_states else None,
             attentions=encoder_outputs.attentions if output_attentions else None,
         )
+
+    def forward_debug(
+        self,
+        pixel_values: torch.Tensor,
+        grid_thw: Optional[torch.Tensor] = None,
+        visible_indices: Optional[torch.Tensor] = None,
+    ) -> dict:
+        """
+        Debug forward pass that captures intermediate states for layer-by-layer comparison.
+
+        This method is useful for debugging and verifying consistency with other implementations
+        (e.g., Megatron-LM). It captures outputs at each stage of the forward pass.
+
+        Args:
+            pixel_values: 4D [B, C, H, W] or 5D [B, C, T, H, W] tensor
+            grid_thw: Optional grid sizes for each sample
+            visible_indices: Optional indices for sparse patch selection
+
+        Returns:
+            dict: Dictionary containing intermediate outputs at each stage:
+                - "after_patch_embed": Embeddings after patch projection
+                - "after_visible_gather": Embeddings after gathering visible patches
+                - "rotary_pos_emb": Rotary position embeddings
+                - "after_pre_layernorm": Embeddings after pre-layernorm
+                - "layer_outputs": Dict mapping layer index to layer output
+                - "final_encoder_output": Output after all encoder layers
+                - "after_post_layernorm": Output after post-layernorm (if exists)
+                - "after_merger": Output after patch merger
+        """
+        output = {}
+
+        # Store input for consistency checking
+        output["input_pixel_values"] = pixel_values.clone()
+        if grid_thw is not None:
+            output["input_grid_thw"] = grid_thw.clone()
+
+        # Handle special case for video input
+        if pixel_values.shape[0] == 8 and pixel_values.dim() == 4:
+            pixel_values = pixel_values.unsqueeze(0).permute(0, 2, 1, 3, 4)
+
+        # Determine video dimensions for RoPE
+        if pixel_values.dim() == 5:
+            t_frames = pixel_values.shape[2]
+            height = pixel_values.shape[3]
+            width = pixel_values.shape[4]
+        else:
+            t_frames = 1
+            height = pixel_values.shape[2]
+            width = pixel_values.shape[3]
+
+        # 1. Embeddings
+        hidden_states = self.embeddings(pixel_values)
+        batch_size, total_patches, _ = hidden_states.shape
+        output["after_patch_embed"] = hidden_states.clone()
+
+        # 2. Visible Indices Handling
+        if visible_indices is None or (isinstance(visible_indices, list) and visible_indices[0] is None):
+            if t_frames == 1:
+                visible_indices = (
+                    torch.arange(total_patches, device=pixel_values.device).unsqueeze(0).expand(batch_size, -1)
+                )
+            else:
+                frame_indices = torch.arange(t_frames).unsqueeze(0).to(pixel_values.device)
+                total_frames_tensor = torch.tensor([t_frames]).to(pixel_values.device)
+                interpolated_indices = interpolate_frame_indices(frame_indices, total_frames_tensor, 64)
+                visible_indices = compute_patch_positions_with_interpolated_temporal(
+                    interpolated_indices,
+                    height // self.config.patch_size,
+                    width // self.config.patch_size,
+                    pixel_values.device,
+                )
+        else:
+            if isinstance(visible_indices, list):
+                if len(visible_indices) == 1:
+                    visible_indices = visible_indices[0]
+                    if not isinstance(visible_indices, torch.Tensor):
+                        visible_indices = torch.tensor(visible_indices, device=pixel_values.device)
+                    if visible_indices.dim() == 1:
+                        visible_indices = visible_indices.unsqueeze(0)
+                else:
+                    visible_indices = torch.stack(
+                        [v if isinstance(v, torch.Tensor) else torch.tensor(v) for v in visible_indices]
+                    )
+            elif not isinstance(visible_indices, torch.Tensor):
+                visible_indices = torch.tensor(visible_indices, device=pixel_values.device)
+            visible_indices = visible_indices.to(pixel_values.device)
+
+        # Gather visible patches for images
+        if t_frames == 1:
+            gather_index = visible_indices.unsqueeze(-1).expand(-1, -1, self.config.hidden_size)
+            hidden_states = torch.gather(hidden_states, 1, gather_index)
+        output["after_visible_gather"] = hidden_states.clone()
+
+        # 3. RoPE Construction
+        freqs_full = self.video_rope.forward_with_thw(
+            t=64 if t_frames > 1 else 1,
+            h=height // self.config.patch_size,
+            w=width // self.config.patch_size,
+            device=pixel_values.device,
+        )
+        freqs_visible = freqs_full[visible_indices]
+        output["rotary_pos_emb"] = freqs_visible.clone()
+        freqs_visible = torch.cat([freqs_visible, freqs_visible], dim=-1)
+
+        # 4. Pre-Norm
+        hidden_states = self.layernorm_pre(hidden_states)
+        output["after_pre_layernorm"] = hidden_states.clone()
+
+        # 5. Encoder layers (capture each layer input and output)
+        output["layer_outputs"] = {}
+        for layer_idx, layer in enumerate(self.encoder.layers):
+            # Save input to this layer
+            output["layer_outputs"][f"layer_{layer_idx}_input"] = hidden_states.clone()
+
+            layer_outputs = layer(
+                hidden_states,
+                attention_mask=None,
+                rotary_pos_emb=freqs_visible,
+                output_attentions=False,
+            )
+            hidden_states = layer_outputs[0]
+
+            # Save output of this layer
+            output["layer_outputs"][f"layer_{layer_idx}_output"] = hidden_states.clone()
+
+        output["final_encoder_output"] = hidden_states.clone()
+
+        # 6. Use second-to-last layer output for merger (matching forward behavior)
+        num_layers = len(self.encoder.layers)
+        if num_layers >= 2:
+            hidden_states_for_merger = output["layer_outputs"][f"layer_{num_layers - 1}_output"]
+        else:
+            hidden_states_for_merger = hidden_states
+
+        # Save output before adapter/merger (for consistency with Megatron model)
+        output["before_adapter"] = hidden_states_for_merger.clone()
+
+        # 7. Post-Norm (if exists)
+        if self.layernorm_post is not None:
+            hidden_states_for_merger = self.layernorm_post(hidden_states_for_merger)
+            output["after_post_layernorm"] = hidden_states_for_merger.clone()
+
+        # 8. Merger
+        h_patches = height // self.config.patch_size
+        w_patches = width // self.config.patch_size
+        merged_output = self.merger(hidden_states_for_merger, grid_thw=None, height=h_patches, width=w_patches)
+        output["after_merger"] = merged_output.clone()
+
+        return output
 
 
 @auto_docstring
@@ -972,16 +1205,16 @@ class LlavaOnevision2Model(LlavaOnevision2PreTrainedModel):
         """
         # Convert to correct dtype
         pixel_values_videos = pixel_values_videos.type(self.visual.dtype)
-        
+
         # Forward through vision model (batch mode)
         vision_output = self.visual(pixel_values_videos, visible_indices=None)
-        
+
         # Extract the actual tensor from BaseModelOutputWithPooling
-        if hasattr(vision_output, 'last_hidden_state'):
+        if hasattr(vision_output, "last_hidden_state"):
             video_embeds = vision_output.last_hidden_state
         else:
             video_embeds = vision_output[0]  # Fallback for tuple output
-        
+
         # Compute split sizes from video_grid_thw or from input shape
         if video_grid_thw is not None:
             split_sizes = (video_grid_thw.prod(-1) // self.visual.spatial_merge_size**2).tolist()
@@ -989,13 +1222,13 @@ class LlavaOnevision2Model(LlavaOnevision2PreTrainedModel):
             # Compute from input shape
             batch_size = pixel_values_videos.shape[0]
             split_sizes = [video_embeds.shape[1]] * batch_size
-        
+
         # Split embeddings per video
         if len(split_sizes) > 1:
             video_embeds = torch.split(video_embeds.view(-1, video_embeds.shape[-1]), split_sizes)
         else:
             video_embeds = [video_embeds.view(-1, video_embeds.shape[-1])]
-        
+
         return video_embeds
 
     def get_image_features(self, pixel_values, image_grid_thw: Optional[torch.LongTensor] = None):
@@ -1016,53 +1249,55 @@ class LlavaOnevision2Model(LlavaOnevision2PreTrainedModel):
                 if img.dim() == 3:
                     # [C, H, W] -> [1, C, H, W]
                     img = img.unsqueeze(0)
-                
+
                 # Convert to correct dtype
                 img = img.type(self.visual.dtype)
-                
+
                 # Forward through vision model (batch mode)
                 vision_output = self.visual(img, visible_indices=None)
-                
+
                 # Extract the actual tensor from BaseModelOutputWithPooling
-                if hasattr(vision_output, 'last_hidden_state'):
+                if hasattr(vision_output, "last_hidden_state"):
                     img_embeds = vision_output.last_hidden_state
                 else:
                     img_embeds = vision_output[0]
-                
+
                 all_image_embeds.append(img_embeds.view(-1, img_embeds.shape[-1]))
-            
+
             return all_image_embeds
-        
+
         # Standard [B, C, H, W] format
         if pixel_values.dim() == 4:
             # Convert to correct dtype
             pixel_values = pixel_values.type(self.visual.dtype)
-            
+
             # Forward through vision model (batch mode)
             vision_output = self.visual(pixel_values, visible_indices=None)
-            
+
             # Extract the actual tensor from BaseModelOutputWithPooling
-            if hasattr(vision_output, 'last_hidden_state'):
+            if hasattr(vision_output, "last_hidden_state"):
                 image_embeds = vision_output.last_hidden_state
             else:
                 image_embeds = vision_output[0]
-            
+
             # Compute split sizes
             batch_size = pixel_values.shape[0]
             if image_grid_thw is not None:
                 split_sizes = (image_grid_thw.prod(-1) // self.visual.spatial_merge_size**2).tolist()
             else:
                 split_sizes = [image_embeds.shape[1]] * batch_size
-            
+
             # Split embeddings per image
             if len(split_sizes) > 1:
                 image_embeds = torch.split(image_embeds.view(-1, image_embeds.shape[-1]), split_sizes)
             else:
                 image_embeds = [image_embeds.view(-1, image_embeds.shape[-1])]
-            
+
             return image_embeds
         else:
-            raise ValueError(f"Unsupported pixel_values type/shape: {type(pixel_values)}, {pixel_values.shape if hasattr(pixel_values, 'shape') else 'N/A'}")
+            raise ValueError(
+                f"Unsupported pixel_values type/shape: {type(pixel_values)}, {pixel_values.shape if hasattr(pixel_values, 'shape') else 'N/A'}"
+            )
 
     def get_placeholder_mask(
         self,
@@ -1140,9 +1375,9 @@ class LlavaOnevision2Model(LlavaOnevision2PreTrainedModel):
 
         if inputs_embeds is None:
             inputs_embeds = self.get_input_embeddings()(input_ids)
-        
+
         image_embeds = None
-        
+
         if pixel_values is not None:
             image_embeds = self.get_image_features(pixel_values, image_grid_thw)
 
@@ -1168,8 +1403,10 @@ class LlavaOnevision2Model(LlavaOnevision2PreTrainedModel):
                 position_ids = attention_mask.long().cumsum(-1) - 1
                 position_ids.masked_fill_(attention_mask == 0, 1)
             else:
-                position_ids = torch.arange(seq_length, device=inputs_embeds.device).unsqueeze(0).expand(batch_size, -1)
-            
+                position_ids = (
+                    torch.arange(seq_length, device=inputs_embeds.device).unsqueeze(0).expand(batch_size, -1)
+                )
+
             # Handle cache_position for generation
             if cache_position is not None and cache_position[0] != 0:
                 position_ids = position_ids + cache_position[0]
@@ -1529,8 +1766,8 @@ class LlavaOnevision2ForConditionalGeneration(LlavaOnevision2PreTrainedModel, Ge
 
 
 __all__ = [
-    "LlavaOnevision2ForConditionalGeneration", 
-    "LlavaOnevision2Model", 
+    "LlavaOnevision2ForConditionalGeneration",
+    "LlavaOnevision2Model",
     "LlavaOnevision2PreTrainedModel",
     "LlavaOnevision2VisionPretrainedModel",
     # Vision components

@@ -217,7 +217,7 @@ We strongly recommend using the docker environment for a seamless experience. Th
 git clone https://github.com/anxiangsir/LLaVA-OneVision-2.git
 cd LLaVA-OneVision-2
 
-docker build -t llava_megatron:25.04 .
+docker build -t llava_megatron:25.12 .
 
 # Run container with -w to set working directory directly to the mounted volume
 docker run -it --gpus all \
@@ -226,7 +226,7 @@ docker run -it --gpus all \
     -v $(pwd):/workspace/LLaVA-OneVision-2 \
     -w /workspace/LLaVA-OneVision-2 \
     --name "llava_megatron_container" \
-    llava_megatron:25.04 /bin/bash
+    llava_megatron:25.12 /bin/bash
 ```
 
 ### 2. Checkpoint and Format Conversion
