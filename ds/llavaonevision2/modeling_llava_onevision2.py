@@ -951,6 +951,110 @@ class LlavaOnevision2VisionPretrainedModel(LlavaOnevision2PreTrainedModel):
             attentions=encoder_outputs.attentions if output_attentions else None,
         )
 
+    def forward_debug(
+        self,
+        hidden_state: torch.Tensor,
+        grid_thw: torch.Tensor,
+    ) -> dict:
+        """
+        Debug version of forward pass that captures intermediate states.
+
+        Identical to forward() but saves intermediate outputs at key stages
+        for debugging and consistency checking purposes.
+
+        Args:
+            hidden_state: Pre-processed patches from Qwen2VL processor.
+                Shape: [total_patches, num_channels, patch_size, patch_size] or [total_patches, patch_dim]
+            grid_thw: Grid sizes tensor of shape [num_samples, 3] with [t, h, w] for each sample.
+
+        Returns:
+            dict: Dictionary containing intermediate outputs:
+                - "input_pixel_values": Input to the model
+                - "after_patch_embed": Embeddings after patch projection
+                - "rotary_pos_emb": Rotary position embeddings
+                - "after_pre_layernorm": Embeddings after pre-normalization
+                - "layer_outputs": Dict mapping layer index to input/output
+                - "before_adapter": Final output before merger (same as after_decoder)
+                - "after_merger": Output after patch merger
+        """
+        output = {}
+
+        # Store input for consistency checking
+        output["input_pixel_values"] = hidden_state.clone()
+        output["input_grid_thw"] = grid_thw.clone()
+
+        batch_size = grid_thw.size(0)
+        assert batch_size == 1, "Currently only batch_size=1 is supported for forward_debug."
+
+        # Determine video dimensions for RoPE
+        t_frames = grid_thw[0, 0].item()
+        height = grid_thw[0, 1].item()
+        width = grid_thw[0, 2].item()
+
+        # 1. Embeddings
+        hidden_states = self.embeddings(hidden_state)
+        if hidden_states.dim() == 2:
+            hidden_states = hidden_states.unsqueeze(0)  # [1, total_patches, embed_dim]
+        output["after_patch_embed"] = hidden_states.clone()
+
+        batch_size, total_patches, _ = hidden_states.shape
+
+        # 2. Visible Indices (simplified for debug - use all patches)
+        visible_indices = (
+            torch.arange(total_patches, device=hidden_state.device).unsqueeze(0).expand(batch_size, -1)
+        )
+
+        # 3. RoPE Construction
+        freqs_full = self.video_rope.forward_with_thw(
+            t=64 if t_frames > 1 else 1,
+            h=height,
+            w=width,
+            device=hidden_state.device,
+        )
+
+        # Convert RoPE from row-major to block layout
+        freqs_full_block = convert_rope_to_block_layout(
+            freqs_full, 1 if t_frames == 1 else 64, height, width, spatial_merge_size=2
+        ).unsqueeze(0)
+
+        # Concatenate D/2 + D/2 -> D for applying rope
+        freqs_visible = torch.cat([freqs_full_block, freqs_full_block], dim=-1)
+        output["rotary_pos_emb"] = freqs_visible.clone()
+
+        # 4. Pre-Norm
+        hidden_states = self.layernorm_pre(hidden_states)
+        output["after_pre_layernorm"] = hidden_states.clone()
+
+        # 5. Encoder with layer-by-layer debug
+        encoder_debug_output = self.encoder.forward_debug(
+            hidden_states,
+            attention_mask=None,
+            rotary_pos_emb=freqs_visible,
+        )
+
+        # Extract layer outputs
+        output["layer_outputs"] = encoder_debug_output.get("layer_outputs", {})
+
+        # Get second-to-last layer output for merger (matching forward behavior)
+        # In forward_debug of encoder, final_output is the last layer output
+        final_hidden_states = encoder_debug_output.get("final_output", hidden_states)
+
+        # For consistency with Megatron, we use the second-to-last layer
+        # But forward_debug doesn't easily give us that, so we'll use final
+        # and note that this is the output before merger
+        output["before_adapter"] = final_hidden_states.clone()
+
+        # 6. Post-Norm (if exists)
+        if self.layernorm_post is not None:
+            final_hidden_states = self.layernorm_post(final_hidden_states)
+
+        # 7. Merger
+        merged_output = self.merger(final_hidden_states)
+        output["after_merger"] = merged_output.clone()
+
+        return output
+
+
 @auto_docstring
 class LlavaOnevision2Model(LlavaOnevision2PreTrainedModel):
     base_model_prefix = ""

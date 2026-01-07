@@ -377,27 +377,20 @@ class LlavaOnevision2ConsistencyTester:
 
     def _process_image_for_hf(self, pixel_values_mcore: torch.Tensor, image_grid_thw: torch.Tensor) -> tuple:
         """
-        Convert Megatron-format pixel_values back to HuggingFace format.
+        Return pixel values for HuggingFace model.
+
+        Since the new HF model now uses the same 2x2 memory layout as Megatron-Core,
+        no conversion is needed - we can use the mcore pixel values directly.
 
         Args:
             pixel_values_mcore: Tensor from Qwen2VLImageProcessor, shape (num_patches, patch_dim)
             image_grid_thw: Tensor of shape [num_images, 3] with (t, h, w)
 
         Returns:
-            tuple: (pixel_values_hf, grid_thw) for HuggingFace model
+            tuple: (pixel_values, grid_thw) for HuggingFace model (same as input)
         """
-        patch_size = self.hf_config.vision_config.patch_size
-        temporal_patch_size = self.hf_config.vision_config.temporal_patch_size
-
-        # Convert back to HF format: (B, C, H, W)
-        pixel_values_hf = convert_mcore_pixel_values_to_hf_format(
-            pixel_values_mcore,
-            image_grid_thw,
-            patch_size=patch_size,
-            temporal_patch_size=temporal_patch_size,
-        )
-
-        return pixel_values_hf, image_grid_thw
+        # No conversion needed - HF model now uses the same 2x2 memory layout as mcore
+        return pixel_values_mcore, image_grid_thw
 
     def _load_hf_model(self):
         """Load HuggingFace LlavaOnevision2 model."""
@@ -506,7 +499,7 @@ class LlavaOnevision2ConsistencyTester:
             # Verify input consistency - log input statistics
             log("INFO", "=" * 40)
             log("INFO", "Input Consistency Check:")
-            log("INFO", f"  HF input shape: {pixel_values_hf.shape} (B, C, H, W)")
+            log("INFO", f"  HF input shape: {pixel_values_hf.shape} (num_patches, patch_dim)")
             log("INFO", f"  Megatron input shape: {pixel_values_mcore.shape} (num_patches, patch_dim)")
             log("INFO", f"  HF pixel_values dtype: {pixel_values_hf.dtype}")
             log("INFO", f"  HF pixel_values device: {pixel_values_hf.device}")
@@ -520,8 +513,7 @@ class LlavaOnevision2ConsistencyTester:
             log("INFO", "=" * 40)
 
             # Get outputs from both models using forward_debug
-            # HF model receives (B, C, H, W) format
-            # Megatron model receives (num_patches, patch_dim) format from Qwen2VLImageProcessor
+            # Both HF and Megatron models now receive (num_patches, patch_dim) format
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 hf_debug_outputs = self.hf_model.forward_debug(pixel_values_hf, grid_thw)
                 megatron_debug_outputs = self.megatron_model.vision_model.forward_debug(
@@ -545,12 +537,7 @@ class LlavaOnevision2ConsistencyTester:
                 hf_output = hf_debug_outputs[layer_key]
                 megatron_output = megatron_debug_outputs[layer_key]
 
-                # For 'before_adapter', HF output is in row-major (spatial_merge_size=1) order
-                # but mcore output is in 2x2 blocks (spatial_merge_size=2) order.
-                # Convert HF output to mcore format for proper comparison.
-                if layer_key == "before_adapter":
-                    hf_output = convert_hf_output_to_mcore_format(hf_output, grid_thw, spatial_merge_size=2)
-                    log("INFO", f"Converted HF '{layer_key}' from spatial_merge_size=1 to 2 for comparison")
+                # No conversion needed - HF model now uses the same 2x2 memory layout as mcore
 
                 hf_tensor = hf_output.float().cpu().numpy()
                 megatron_tensor = megatron_output.float().cpu().numpy()
@@ -597,7 +584,7 @@ class LlavaOnevision2ConsistencyTester:
         pixel_336_mcore, grid_thw_336 = self._process_image_for_mcore(img_336)
         pixel_448_mcore, grid_thw_448 = self._process_image_for_mcore(img_448)
 
-        # Convert Megatron format back to HF format: (B, C, H, W)
+        # HF model now uses the same 2x2 memory layout as mcore - no conversion needed
         pixel_224_hf, _ = self._process_image_for_hf(pixel_224_mcore, grid_thw_224)
         pixel_336_hf, _ = self._process_image_for_hf(pixel_336_mcore, grid_thw_336)
         pixel_448_hf, _ = self._process_image_for_hf(pixel_448_mcore, grid_thw_448)
@@ -606,16 +593,13 @@ class LlavaOnevision2ConsistencyTester:
         log("INFO", f"HF 336 input shape: {pixel_336_hf.shape}, Megatron 336 input shape: {pixel_336_mcore.shape}")
         log("INFO", f"HF 448 input shape: {pixel_448_hf.shape}, Megatron 448 input shape: {pixel_448_mcore.shape}")
 
-        # Get HF outputs for individual images (using HF input format)
+        # Get HF outputs for individual images
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             hf_out_224 = self.hf_model.forward_debug(pixel_224_hf, grid_thw_224)["before_adapter"]
             hf_out_336 = self.hf_model.forward_debug(pixel_336_hf, grid_thw_336)["before_adapter"]
             hf_out_448 = self.hf_model.forward_debug(pixel_448_hf, grid_thw_448)["before_adapter"]
 
-        # Convert HF outputs from spatial_merge_size=1 to spatial_merge_size=2 for comparison
-        hf_out_224 = convert_hf_output_to_mcore_format(hf_out_224, grid_thw_224, spatial_merge_size=2)
-        hf_out_336 = convert_hf_output_to_mcore_format(hf_out_336, grid_thw_336, spatial_merge_size=2)
-        hf_out_448 = convert_hf_output_to_mcore_format(hf_out_448, grid_thw_448, spatial_merge_size=2)
+        # No conversion needed - HF model now uses the same 2x2 memory layout as mcore
 
         hf_features_224 = hf_out_224.float().cpu().numpy()
         hf_features_336 = hf_out_336.float().cpu().numpy()
@@ -931,7 +915,7 @@ class LlavaOnevision2ConsistencyTester:
         # Process image using Qwen2VLImageProcessor for Megatron model
         pixel_values_mcore, image_grid_thw = self._process_image_for_mcore(test_image)
 
-        # Convert Megatron format back to HF format: (B, C, H, W)
+        # HF model now uses the same 2x2 memory layout as mcore - no conversion needed
         pixel_values_hf, grid_thw = self._process_image_for_hf(pixel_values_mcore, image_grid_thw)
 
         log("INFO", f"HF pixel values shape: {pixel_values_hf.shape}")
@@ -975,8 +959,7 @@ class LlavaOnevision2ConsistencyTester:
                 hf_input_tensor = hf_layer_outputs[layer_input_key]
                 mcore_input_tensor = mcore_layer_outputs[layer_input_key]
 
-                # Convert HF output from spatial_merge_size=1 to spatial_merge_size=2 for comparison
-                hf_input_tensor = convert_hf_output_to_mcore_format(hf_input_tensor, grid_thw, spatial_merge_size=2)
+                # No conversion needed - HF model now uses the same 2x2 memory layout as mcore
 
                 hf_input = hf_input_tensor.float().cpu().numpy()
                 mcore_input = mcore_input_tensor.float().cpu().numpy()
@@ -1012,8 +995,7 @@ class LlavaOnevision2ConsistencyTester:
                 hf_output_tensor = hf_layer_outputs[layer_output_key]
                 mcore_output_tensor = mcore_layer_outputs[layer_output_key]
 
-                # Convert HF output from spatial_merge_size=1 to spatial_merge_size=2 for comparison
-                hf_output_tensor = convert_hf_output_to_mcore_format(hf_output_tensor, grid_thw, spatial_merge_size=2)
+                # No conversion needed - HF model now uses the same 2x2 memory layout as mcore
 
                 hf_output = hf_output_tensor.float().cpu().numpy()
                 mcore_output = mcore_output_tensor.float().cpu().numpy()
@@ -1052,10 +1034,7 @@ class LlavaOnevision2ConsistencyTester:
             hf_enc_input_tensor = hf_layer_outputs["input_hidden_states"]
             mcore_enc_input_tensor = mcore_layer_outputs["input_hidden_states"]
 
-            # Convert HF output from spatial_merge_size=1 to spatial_merge_size=2 for comparison
-            hf_enc_input_tensor = convert_hf_output_to_mcore_format(
-                hf_enc_input_tensor, grid_thw, spatial_merge_size=2
-            )
+            # No conversion needed - HF model now uses the same 2x2 memory layout as mcore
 
             hf_enc_input = hf_enc_input_tensor.float().cpu().numpy()
             mcore_enc_input = mcore_enc_input_tensor.float().cpu().numpy()
@@ -1074,10 +1053,7 @@ class LlavaOnevision2ConsistencyTester:
             hf_enc_output_tensor = hf_layer_outputs["final_output"]
             mcore_enc_output_tensor = mcore_layer_outputs["final_output"]
 
-            # Convert HF output from spatial_merge_size=1 to spatial_merge_size=2 for comparison
-            hf_enc_output_tensor = convert_hf_output_to_mcore_format(
-                hf_enc_output_tensor, grid_thw, spatial_merge_size=2
-            )
+            # No conversion needed - HF model now uses the same 2x2 memory layout as mcore
 
             hf_enc_output = hf_enc_output_tensor.float().cpu().numpy()
             mcore_enc_output = mcore_enc_output_tensor.float().cpu().numpy()
@@ -1124,7 +1100,7 @@ class LlavaOnevision2ConsistencyTester:
         # Process image using Qwen2VLImageProcessor for Megatron model
         pixel_values_mcore, image_grid_thw = self._process_image_for_mcore(test_image)
 
-        # Convert Megatron format back to HF format: (B, C, H, W)
+        # HF model now uses the same 2x2 memory layout as mcore - no conversion needed
         pixel_values_hf, grid_thw = self._process_image_for_hf(pixel_values_mcore, image_grid_thw)
 
         log("INFO", f"HF pixel values shape: {pixel_values_hf.shape}")
@@ -1252,8 +1228,9 @@ class LlavaOnevision2ConsistencyTester:
         text = f"<|vision_start|><|image_pad|><|vision_end|>{prompt}<|im_end|>"
 
         input_ids, pixel_values, image_grid_thw, attention_mask_neg = self._tokenize_and_preprocess(test_image, text)
+        # HF model now uses the same 2x2 memory layout as mcore - no conversion needed
         pixel_values_mcore = pixel_values
-        pixel_values_hf = convert_mcore_pixel_values_to_hf_format(pixel_values, image_grid_thw)
+        pixel_values_hf = pixel_values  # Same format now
 
         log("INFO", f"HF pixel values shape: {pixel_values_hf.shape}")
         log("INFO", f"Megatron pixel values shape: {pixel_values_mcore.shape}")
