@@ -1086,7 +1086,7 @@ class LlavaOnevision2VisionPretrainedModel(LlavaOnevision2PreTrainedModel):
 
         # Use second-to-last layer output for better feature representation
         if encoder_outputs.hidden_states is not None and len(encoder_outputs.hidden_states) >= 2 and not skip_merger:
-            sequence_output = encoder_outputs.hidden_states[-2]
+            sequence_output = encoder_outputs.hidden_states[-1]
         else:
             sequence_output = encoder_outputs[0]
 

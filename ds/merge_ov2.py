@@ -1,5 +1,6 @@
 import argparse
 import os
+import shutil
 from io import BytesIO
 
 import numpy as np
@@ -50,18 +51,18 @@ def load_empty_model(llm_path):
     )
     processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct", use_fast=True)
     processor.image_processor.temporal_patch_size = 1
-    processor.image_processor.max_pixels = 1600*1600
-    llava_ov_config = LlavaOnevision2Config()
+    processor.image_processor.max_pixels = 2000 * 2000
+    llava_onevision2_config = LlavaOnevision2Config()
     llm_config = AutoConfig.from_pretrained(llm_path, trust_remote_code=True, use_fast=True)
-    llava_ov_config.text_config.update(llm_config.to_dict())
-    llava_ov_config.text_config.tie_word_embeddings = False
+    llava_onevision2_config.text_config.update(llm_config.to_dict())
+    llava_onevision2_config.text_config.tie_word_embeddings = False
     # Set both text_hidden_size and out_hidden_size for merger to output correct dimension
-    llava_ov_config.vision_config.text_hidden_size = llava_ov_config.text_config.hidden_size
-    llava_ov_config.vision_config.out_hidden_size = (
-        llava_ov_config.text_config.hidden_size
+    llava_onevision2_config.vision_config.text_hidden_size = llava_onevision2_config.text_config.hidden_size
+    llava_onevision2_config.vision_config.out_hidden_size = (
+        llava_onevision2_config.text_config.hidden_size
     )  # Critical: merger output dim
 
-    model = LlavaOnevision2ForConditionalGeneration(llava_ov_config)
+    model = LlavaOnevision2ForConditionalGeneration(llava_onevision2_config)
     return model, processor, tokenizer
 
 
@@ -295,7 +296,9 @@ def load_llm_weights(model, llm_path, cur_len):
     return llm_weights
 
 
-def convert_rowmajor_to_block_layout(features: torch.Tensor, t: int, h: int, w: int, spatial_merge_size: int = 2) -> torch.Tensor:
+def convert_rowmajor_to_block_layout(
+    features: torch.Tensor, t: int, h: int, w: int, spatial_merge_size: int = 2
+) -> torch.Tensor:
     """
     Convert features from row-major order to 2x2 block layout.
 
@@ -338,7 +341,9 @@ def convert_rowmajor_to_block_layout(features: torch.Tensor, t: int, h: int, w: 
     return features
 
 
-def convert_block_to_rowmajor_layout(features: torch.Tensor, t: int, h: int, w: int, spatial_merge_size: int = 2) -> torch.Tensor:
+def convert_block_to_rowmajor_layout(
+    features: torch.Tensor, t: int, h: int, w: int, spatial_merge_size: int = 2
+) -> torch.Tensor:
     """
     Convert features from 2x2 block layout back to row-major order.
     This is the inverse of convert_rowmajor_to_block_layout.
@@ -423,9 +428,9 @@ def validate_vit_consistency(model, vit_path, img_path, processor):
 
     # ========== Original ViT with CLIP processor (row-major order) ==========
     clip_image_processor = CLIPImageProcessor.from_pretrained(vit_path, local_files_only=True)
-    clip_pixel_values = clip_image_processor(
-        images=image, return_tensors="pt", do_resize=False, do_center_crop=False
-    )["pixel_values"]
+    clip_pixel_values = clip_image_processor(images=image, return_tensors="pt", do_resize=False, do_center_crop=False)[
+        "pixel_values"
+    ]
     clip_pixel_values = clip_pixel_values.to(dtype=torch.bfloat16, device=device)
 
     _, _, H, W = clip_pixel_values.shape
@@ -487,12 +492,25 @@ def validate_vit_consistency(model, vit_path, img_path, processor):
 
     # ========== Forward pass ==========
     with torch.no_grad():
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             # Original ViT with CLIP-processed input (row-major order output)
-            original_output = original_vit(clip_pixel_values, use_head=False).last_hidden_state[0]
+            original_output = original_vit(clip_pixel_values).last_hidden_state[0]
+
+            # Generate patch_positions for merged model
+            patch_positions = []
+            for i in range(qwen_grid_thw.shape[0]):
+                t, h, w = qwen_grid_thw[i].tolist()
+                t_idx = torch.arange(t, device=qwen_pixel_values.device, dtype=torch.float32)
+                h_idx = torch.arange(h, device=qwen_pixel_values.device, dtype=torch.float32)
+                w_idx = torch.arange(w, device=qwen_pixel_values.device, dtype=torch.float32)
+                mesh_t, mesh_h, mesh_w = torch.meshgrid(t_idx, h_idx, w_idx, indexing="ij")
+                patch_positions.append(torch.stack([mesh_t, mesh_h, mesh_w], dim=-1).reshape(-1, 3))
+            patch_positions = torch.cat(patch_positions, dim=0)
 
             # Merged model with Qwen2VL-processed input (block order output)
-            merged_output = merged_visual(qwen_pixel_values, qwen_grid_thw, skip_merger=True).last_hidden_state[0]
+            merged_output = merged_visual(
+                qwen_pixel_values, qwen_grid_thw, patch_positions=patch_positions, skip_merger=True
+            ).last_hidden_state[0]
 
             print(f"Original ViT output shape: {original_output.shape}")
             print(f"Merged visual output shape: {merged_output.shape}")
@@ -594,13 +612,42 @@ def save_merged_model(model, output_path, tokenizer, image_processor):
     """
     print(f"Saving merged model to: {output_path}")
 
+    # Register for auto class
+    try:
+        LlavaOnevision2Config.register_for_auto_class()
+        LlavaOnevision2ForConditionalGeneration.register_for_auto_class("AutoModelForCausalLM")
+    except Exception as e:
+        logger.warning(f"Failed to register auto class: {e}")
+
     # Create output directory
     os.makedirs(output_path, exist_ok=True)
+
+    # Configure auto_map for AutoModel loading
+    if not hasattr(model.config, "auto_map"):
+        model.config.auto_map = {}
+
+    model.config.auto_map["AutoConfig"] = "configuration_llava_onevision2.LlavaOnevision2Config"
+    model.config.auto_map["AutoModelForCausalLM"] = "modeling_llava_onevision2.LlavaOnevision2ForConditionalGeneration"
 
     # Save model configuration
     tokenizer.save_pretrained(output_path)
     image_processor.save_pretrained(output_path)
     model.save_pretrained(output_path)
+
+    # Copy modeling files
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    module_dir = os.path.join(current_dir, "llavaonevision2")
+
+    files_to_copy = ["configuration_llava_onevision2.py", "modeling_llava_onevision2.py"]
+
+    for filename in files_to_copy:
+        src = os.path.join(module_dir, filename)
+        dst = os.path.join(output_path, filename)
+        if os.path.exists(src):
+            shutil.copy(src, dst)
+            print(f"Copied {filename} to {output_path}")
+        else:
+            print(f"Warning: Could not find {src} to copy.")
 
     print("Model saving completed.")
 
@@ -666,10 +713,24 @@ def validate_end_to_end(model, processor, tokenizer, img_path):
     print(f"Pixel values shape: {inputs['pixel_values'].shape}")
     print(f"Image grid THW: {inputs['image_grid_thw']}")
 
+    # Generate patch_positions for merged model (required since we removed auto-generation in modeling code)
+    grid_thw = inputs["image_grid_thw"]
+    patch_positions = []
+    for i in range(grid_thw.shape[0]):
+        t, h, w = grid_thw[i].tolist()
+        t_idx = torch.arange(t, device=device, dtype=torch.float32)
+        h_idx = torch.arange(h, device=device, dtype=torch.float32)
+        w_idx = torch.arange(w, device=device, dtype=torch.float32)
+        mesh_t, mesh_h, mesh_w = torch.meshgrid(t_idx, h_idx, w_idx, indexing="ij")
+        patch_positions.append(
+            torch.stack([mesh_t, mesh_h, mesh_w], dim=-1).reshape(-1, 3)
+        )
+    patch_positions = torch.cat(patch_positions, dim=0)
+
     # Generate output
     print("Running forward pass and generation...")
     with torch.no_grad():
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             # First test forward pass (without generation) to check gradients flow
             try:
                 outputs = model(
@@ -677,9 +738,12 @@ def validate_end_to_end(model, processor, tokenizer, img_path):
                     attention_mask=inputs.get("attention_mask"),
                     pixel_values=inputs["pixel_values"],
                     image_grid_thw=inputs["image_grid_thw"],
+                    patch_positions=patch_positions,
                 )
                 print(f"Forward pass successful! Logits shape: {outputs.logits.shape}")
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 raise ValueError(f"❌ Forward pass failed: {e}")
 
             # Then test generation
@@ -689,6 +753,7 @@ def validate_end_to_end(model, processor, tokenizer, img_path):
                     attention_mask=inputs.get("attention_mask"),
                     pixel_values=inputs["pixel_values"],
                     image_grid_thw=inputs["image_grid_thw"],
+                    patch_positions=patch_positions,
                     max_new_tokens=50,
                     do_sample=False,  # Greedy decoding for reproducibility
                     pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
