@@ -1,6 +1,6 @@
-hf_data: "your_LLaVA-One-Vision-1.5-Mid-Training-85M_data_path"
+hf_data: "/nas_train/app.e0031982/datasets/mvp-lab/LLaVA-OneVision-1.5-Mid-Training-85M/coyo"
 data:
-  directory: "your_to_save_result_path"
+  directory: "/nas_train/app.e0016372/datasets/LLaVA-OneVision-1.5-Mid-Training-85M"
   # Temporary file to store paired file names
   output_base: "base_name_v2_vqa_85m_datas.txt"
   # Final output file (contains token length information)
@@ -9,7 +9,7 @@ data:
   filter_with_image: false
 # Model path
 model:
-  checkpoint: "your_huggingface_tokenizer_path"
+  checkpoint: "/nas_train/app.e0016372/models/LLaVA-OneVision-1.5-4B-Instruct"
 sample:
   # Maximum length of training data
   max_len: 8192
@@ -41,4 +41,4 @@ logging:
   # Log file path
   file: "s1_processing_vqa_85m_datas.log"
   # Whether to use /dev/shm as a temporary directory
-  use_shm: false
+  use_shm: true

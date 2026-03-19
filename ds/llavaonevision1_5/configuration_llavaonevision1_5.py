@@ -265,7 +265,7 @@ class Llavaonevision1_5Config(PretrainedConfig):
         vision_config=None,
         image_token_id=151655,
         video_token_id=151656,
-        vocab_size=152064,
+        vocab_size=151936,
         **kwargs,
     ):
         if isinstance(vision_config, dict):

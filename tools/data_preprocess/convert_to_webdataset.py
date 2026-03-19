@@ -4,11 +4,38 @@ import json
 import os
 import yaml
 import webdataset as wds
+import jsonlines
 from tqdm import tqdm
+from pathlib import Path
+from joblib import Parallel, delayed
 import random
 from megatron.energon.epathlib import EPath
 from megatron.energon.flavors import BaseWebdatasetFactory
 from megatron.energon.flavors.webdataset import MAIN_FOLDER_NAME
+
+
+def read_jsonl(path):
+    with jsonlines.open(path, 'r') as reader:
+        return list(reader)
+
+def load_jsonl_dir(jsonl_dir):
+    files = sorted(Path(jsonl_dir).glob('**/*.jsonl'))
+    n_jobs = min(os.cpu_count(), len(files))
+
+    results = Parallel(
+        n_jobs=n_jobs,
+        # backend='multiprocessing',
+        return_as='generator_unordered'
+    )(
+        delayed(read_jsonl)(p)
+        for p in tqdm(files)
+    )
+
+    data = []
+    for part in results:
+        data.extend(part)
+
+    return data
 
 def sample_loader_template(media: str=None):
     """Returns a template for a sample_loader.py file."""
@@ -90,9 +117,9 @@ def convert_to_wds(args):
     if not os.path.exists(args.output_dir):
         os.mkdir(args.output_dir)
 
-    with open(args.json_file, 'r') as f:
-        data = json.load(f)
+    data = load_jsonl_dir(args.jsonl_dir)
     random.shuffle(data)
+    # return
 
     tar = os.path.join(args.output_dir, 'pretrain-%d.tar')
     with wds.ShardWriter(tar, maxcount=args.maxcount, maxsize=args.maxsize) as shard_writer:
@@ -130,7 +157,7 @@ def convert_to_wds(args):
                     }
             shard_writer.write(sample)
     if args.media == "mix" or args.media == "video":
-        write_config(EPath(args.output_dir).absolute(), args.media)
+        write_config(EPath(Path(args.output_dir).absolute()), args.media)
 
     print(f"Dataset successfully converted to wds")
 
@@ -165,7 +192,7 @@ def _add_arguments(parser: argparse.ArgumentParser):
     """Add arguments"""
     group = parser.add_argument_group(title='wds')
     group.add_argument('--output_dir', type=str, required=True, help='Output directory')
-    group.add_argument('--json_file', type=str, required=True, help='Json file')
+    group.add_argument('--jsonl_dir', type=str, required=True, help='Jsonl directory')
     group.add_argument('--image_dir', type=str, required=False, help='Image directory')
     group.add_argument('--video_dir', type=str, required=False, help='Video directory')
     group.add_argument('--maxcount', type=int, default=10000, help='Number of samples per shard')

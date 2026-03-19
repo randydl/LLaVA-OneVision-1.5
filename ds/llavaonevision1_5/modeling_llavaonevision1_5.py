@@ -28,30 +28,50 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch.nn import LayerNorm
-
+from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache, SlidingWindowCache, StaticCache
+from transformers.cache_utils import (
+    Cache,
+    DynamicCache,
+    SlidingWindowCache,
+    StaticCache,
+)
 from transformers.generation import GenerationMixin
+from transformers.integrations import use_kernel_forward_from_hub
+from transformers.masking_utils import (
+    create_causal_mask,
+    create_sliding_window_causal_mask,
+)
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-from transformers.modeling_flash_attention_utils import flash_attn_supports_top_left_mask, is_flash_attn_available
+from transformers.modeling_flash_attention_utils import (
+    FlashAttentionKwargs,
+    flash_attn_supports_top_left_mask,
+    is_flash_attn_available,
+)
 from transformers.modeling_outputs import BaseModelOutputWithPast, ModelOutput
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 from transformers.modeling_utils import PreTrainedModel
-from transformers.utils import auto_docstring, can_return_tuple, is_torch_flex_attn_available, is_torchdynamo_compiling, logging
-from transformers.integrations import use_kernel_forward_from_hub
 from transformers.processing_utils import Unpack
-from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
-from transformers import AutoModelForCausalLM, AutoConfig
-from llavaonevision1_5.configuration_llavaonevision1_5 import Llavaonevision1_5Config, LLaVAOneVision1_5_TextConfig, RiceConfig
+from transformers.utils import (
+    auto_docstring,
+    can_return_tuple,
+    is_torch_flex_attn_available,
+    is_torchdynamo_compiling,
+    logging,
+)
 
+from llavaonevision1_5.configuration_llavaonevision1_5 import (
+    LLaVAOneVision1_5_TextConfig,
+    Llavaonevision1_5Config,
+    RiceConfig,
+)
 
 if is_flash_attn_available():
-    from transformers.modeling_flash_attention_utils import _flash_attention_forward
     from flash_attn import flash_attn_varlen_func
+    from transformers.modeling_flash_attention_utils import _flash_attention_forward
 
 if is_torch_flex_attn_available():
     from torch.nn.attention.flex_attention import BlockMask
-
     from transformers.integrations.flex_attention import make_flex_block_causal_mask
 
 
@@ -230,7 +250,7 @@ class RicePatchEmbed(nn.Module):
     def __init__(
         self,
         patch_size: int = 14,
-        temporal_patch_size: int = 1,
+        temporal_patch_size: int = 2,
         in_channels: int = 3,
         embed_dim: int = 1152,
     ) -> None:
@@ -509,6 +529,7 @@ class LLaVAOneVision1_5_Attention(nn.Module):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
+        self.num_heads = config.num_attention_heads
         self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.scaling = self.head_dim**-0.5
@@ -545,6 +566,7 @@ class LLaVAOneVision1_5_Attention(nn.Module):
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         input_shape = hidden_states.shape[:-1]
+        bsz = input_shape[0]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
         query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
@@ -558,7 +580,7 @@ class LLaVAOneVision1_5_Attention(nn.Module):
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
-        
+
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
@@ -798,7 +820,6 @@ class LLaVAOneVision1_5_DecoderLayer(nn.Module):
     def __init__(self, config: LLaVAOneVision1_5_TextConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-
         if config.use_sliding_window and config._attn_implementation != "flash_attention_2":
             logger.warning_once(
                 f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
@@ -809,6 +830,7 @@ class LLaVAOneVision1_5_DecoderLayer(nn.Module):
         self.mlp = LLaVAOneVision1_5_MLP(config)
         self.input_layernorm = LLaVAOneVision1_5_RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = LLaVAOneVision1_5_RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.attention_type = config.layer_types[layer_idx]
 
     def forward(
         self,
@@ -972,7 +994,7 @@ class RiceTransformerPretrainedModel(Qwen2VLPreTrainedModel):
         rotary_pos_emb_full = self.rotary_pos_emb(max_grid_size)
         rotary_pos_emb = rotary_pos_emb_full[pos_ids].flatten(1)
         return rotary_pos_emb
-    
+
     def get_window_index(self, grid_thw):
         window_index: list = []
         cu_window_seqlens: list = [0]
@@ -1015,7 +1037,7 @@ class RiceTransformerPretrainedModel(Qwen2VLPreTrainedModel):
         return window_index, cu_window_seqlens
 
     @auto_docstring
-    def forward(self, hidden_states: torch.Tensor, grid_thw: torch.Tensor, is_verifying: bool=False) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, grid_thw: torch.Tensor) -> torch.Tensor:
         r"""
         grid_thw (`torch.LongTensor` of shape `(num_images, 3)`):
             The temporal, height and width dimensions of feature shape for each image. Each row contains [t, h, w] values.
@@ -1023,7 +1045,7 @@ class RiceTransformerPretrainedModel(Qwen2VLPreTrainedModel):
         hidden_states = self.patch_embed(hidden_states)
         rotary_pos_emb = self.rot_pos_emb(grid_thw)
         img_feats = hidden_states.shape[0]
-        
+
         cu_seqlens = torch.repeat_interleave(grid_thw[:, 1] * grid_thw[:, 2], grid_thw[:, 0]).cumsum(
             dim=0,
             # Select dtype based on the following factors:
@@ -1057,7 +1079,7 @@ class RiceTransformerPretrainedModel(Qwen2VLPreTrainedModel):
             new_cu.append(write_ptr)
 
         hidden_states = new_hidden
-        cu_seqlens = torch.tensor(new_cu, device=hidden_states.device, dtype=torch.int32) 
+        cu_seqlens = torch.tensor(new_cu, device=hidden_states.device, dtype=torch.int32)
         rotary_pos_emb = new_rotary_pos_emb
 
         hidden_states = self.pre_layernorm(hidden_states)
@@ -1072,7 +1094,7 @@ class RiceTransformerPretrainedModel(Qwen2VLPreTrainedModel):
                 )
             else:
                 hidden_states = blk(hidden_states, cu_seqlens=cu_seqlens, position_embeddings=position_embeddings)
-        
+
         new_hidden = hidden_states.new_empty((img_feats, D))
 
         for i in range(1, num_segments + 1):
@@ -1080,8 +1102,6 @@ class RiceTransformerPretrainedModel(Qwen2VLPreTrainedModel):
             seg_end = cu[i].item()
             new_hidden[seg_start:seg_end] = hidden_states[seg_start+1:seg_end+1]
         hidden_states = new_hidden
-        if is_verifying:
-            return hidden_states
 
         return self.merger(hidden_states)
 
@@ -1102,6 +1122,8 @@ class LLaVAOneVision1_5_TextModel(Qwen2VLPreTrainedModel):
         self._attn_implementation = config._attn_implementation
         self.norm = LLaVAOneVision1_5_RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = LLaVAOneVision1_5_RotaryEmbedding(config=config)
+
+        self.has_sliding_layers = "sliding_attention" in self.config.layer_types
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
@@ -1164,9 +1186,24 @@ class LLaVAOneVision1_5_TextModel(Qwen2VLPreTrainedModel):
         # elif position_ids.dim() == 2: # 这是为了3drope准备的
         #     position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
 
-        causal_mask = self._update_causal_mask(
-            attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
-        )
+        # It may already have been prepared by e.g. `generate`
+        if not isinstance(causal_mask_mapping := attention_mask, dict):
+            # Prepare mask arguments
+            mask_kwargs = {
+                "config": self.config,
+                "input_embeds": inputs_embeds,
+                "attention_mask": attention_mask,
+                "cache_position": cache_position,
+                "past_key_values": past_key_values,
+                "position_ids": position_ids,
+            }
+            # Create the masks
+            causal_mask_mapping = {
+                "full_attention": create_causal_mask(**mask_kwargs),
+            }
+            # The sliding window alternating layers are not always activated depending on the config
+            if self.has_sliding_layers:
+                causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_kwargs)
 
         hidden_states = inputs_embeds
 
@@ -1178,6 +1215,7 @@ class LLaVAOneVision1_5_TextModel(Qwen2VLPreTrainedModel):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
+
         for decoder_layer in self.layers:
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -1186,7 +1224,7 @@ class LLaVAOneVision1_5_TextModel(Qwen2VLPreTrainedModel):
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     hidden_states,
-                    causal_mask,
+                    causal_mask_mapping[decoder_layer.attention_type],
                     position_ids,
                     past_key_values,
                     output_attentions,
@@ -1197,7 +1235,7 @@ class LLaVAOneVision1_5_TextModel(Qwen2VLPreTrainedModel):
             else:
                 layer_outputs = decoder_layer(
                     hidden_states,
-                    attention_mask=causal_mask,
+                    attention_mask=causal_mask_mapping[decoder_layer.attention_type],
                     position_ids=position_ids,
                     past_key_value=past_key_values,
                     output_attentions=output_attentions,
@@ -1631,9 +1669,25 @@ class LLaVAOneVision1_5_Model(Qwen2VLPreTrainedModel):
                 n_image_tokens = (input_ids == self.config.image_token_id).sum().item()
                 n_image_features = image_embeds.shape[0]
                 if not is_torchdynamo_compiling() and n_image_tokens != n_image_features:
-                    raise ValueError(
-                        f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
-                    )
+                    if abs(n_image_tokens - n_image_features) <= 10:
+                        logger.warning_once(
+                            f"!!!!!!!! Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}. "
+                            f"This may be caused by dynamic image sizes during training. Try to fix it. !!!!!!!!"
+                        )
+                        if n_image_tokens > n_image_features:
+                            diff = n_image_tokens - n_image_features
+                            pad_embeds = torch.zeros(
+                                (diff, image_embeds.shape[1]),
+                                dtype=image_embeds.dtype,
+                                device=image_embeds.device,
+                            )
+                            image_embeds = torch.cat([image_embeds, pad_embeds], dim=0)
+                        else:
+                            image_embeds = image_embeds[:n_image_tokens, :]
+                    else:
+                        raise ValueError(
+                            f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
+                        )
                 image_mask = (
                     (input_ids == self.config.image_token_id)
                     .unsqueeze(-1)
@@ -1660,7 +1714,7 @@ class LLaVAOneVision1_5_Model(Qwen2VLPreTrainedModel):
                 video_embeds = video_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
                 inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
 
-            if attention_mask is not None:
+            if attention_mask is not None and isinstance(attention_mask, torch.Tensor):
                 attention_mask = attention_mask.to(inputs_embeds.device)
 
         if use_cache and past_key_values is None:
@@ -1816,6 +1870,8 @@ class LLaVAOneVision1_5_ForConditionalGeneration(Qwen2VLPreTrainedModel, Generat
         video_grid_thw: Optional[torch.LongTensor] = None,
         rope_deltas: Optional[torch.LongTensor] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        *args,
+        **kwargs,
     ) -> Union[Tuple, LLaVAOneVision1_5_CausalLMOutputWithPast]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -1863,6 +1919,7 @@ class LLaVAOneVision1_5_ForConditionalGeneration(Qwen2VLPreTrainedModel, Generat
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "The image shows a street scene with a red stop sign in the foreground. In the background, there is a large red gate with Chinese characters ..."
         ```"""
+        position_ids = None
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -1891,6 +1948,18 @@ class LLaVAOneVision1_5_ForConditionalGeneration(Qwen2VLPreTrainedModel, Generat
 
         hidden_states = outputs[0]
         logits = self.lm_head(hidden_states)
+
+        # with torch.no_grad():
+        #     log_probs = torch.nn.functional.log_softmax(logits.float() / 1, dim=-1)
+        #     entropy = -torch.sum(log_probs.exp() * log_probs, dim=-1).squeeze()
+        #     if entropy.ndim != 1:
+        #         entropy = entropy.unsqueeze(0)
+        #     if hasattr(self, "entropy"):
+        #         self.entropy = torch.cat([self.entropy, entropy], dim=-1)
+        #     else:
+        #         self.entropy = entropy
+
+        #     print(self.entropy.mean())
 
         loss = None
         if labels is not None:

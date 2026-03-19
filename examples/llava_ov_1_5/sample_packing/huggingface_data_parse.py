@@ -3,6 +3,7 @@ from multiprocessing import Pool
 from tool import cfg,get_init_file
 import os
 from functools import partial
+from pathlib import Path
 from tqdm import tqdm
 import json
 import re
@@ -41,7 +42,7 @@ def parse_dataset(data_item,dst_dir):
         index, item = data_item
         name=item['id'].replace('/','_')
         name=os.path.splitext(name)[0]
-        
+
         image_path=os.path.join(dst_dir,name+'.jpg')
         item['image'].save(image_path)
         if cfg['data']['filter_with_caption'] and not check_caption(item['caption']):
@@ -68,18 +69,23 @@ def parse_dataset(data_item,dst_dir):
         json_path=os.path.join(dst_dir,name+'.json')
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(json_data, f, ensure_ascii=False, indent=None)
-        
+
     except Exception as e:
         print(f'{item['id']} has exeption {e}')
 
 def main(workers):
     data_path=cfg['hf_data']
     DEFAULT_DIRECTORY=get_init_file()[-1]
-    dataset = load_dataset(data_path,data_files='*/*/*.parquet', split="train", streaming=True) 
+    DEFAULT_DIRECTORY = Path(DEFAULT_DIRECTORY).parent.joinpath(Path(data_path).stem)
+    DEFAULT_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    DEFAULT_DIRECTORY = str(DEFAULT_DIRECTORY)
+    # print(DEFAULT_DIRECTORY)
+    # return
+    dataset = load_dataset(data_path,data_files='*/*/*.parquet', split="train", streaming=True)
     data_iter = enumerate(dataset)
     with Pool(processes=workers) as pool, tqdm(total=8.5e8, desc="parsing data") as bar:
         for _ in pool.imap_unordered(partial(parse_dataset,dst_dir=DEFAULT_DIRECTORY), data_iter):
             bar.update()
 
 if __name__=="__main__":
-    main(10)
+    main(os.cpu_count())
