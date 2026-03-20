@@ -15,25 +15,31 @@ import os
 import re
 import json
 import sys
+import yaml
 import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ### 参数配置
-# target_directory = "/workspace/test/packing"   # 最终数据存放的位置
 
-current_file = Path(__file__).resolve()
-target_directory = current_file.parent
-newDir = "raw_packing_data_mr_sft_780k-8k-fast"                   # 转 webdataset 之前数据的存放位置 (jpg, json)
-SRC_DIR_IMGS = "/data_1/llava_next_raw_full/split_json_files"   # 原始 img  数据的存放位置
-SRC_DIR_JSONS = "/data_1/llava_next_raw_full/split_json_files"   # 原始 json 数据的存放位置
+# ✅ 加载配置文件
+CONFIG_PATH = Path(__file__).parent.joinpath('configs/s1_config_BMR_sft_780k.yaml')
+if not CONFIG_PATH.exists():
+    raise FileNotFoundError(f"配置文件不存在: {CONFIG_PATH}")
+with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+    cfg = yaml.safe_load(f)
+
+DEFAULT_DIRECTORY = Path(cfg['data']['directory'])
+target_directory = DEFAULT_DIRECTORY.parent.joinpath('output_dir')
+f_toklens_originalsample = target_directory.joinpath(cfg['data']['output_token'])
+SRC_DIR_IMGS = DEFAULT_DIRECTORY  # 原始 img  数据的存放位置
+SRC_DIR_JSONS = DEFAULT_DIRECTORY  # 原始 json 数据的存放位置
+newDir = "raw_packing_data"  # 转 webdataset 之前数据的存放位置 (jpg, json)
 SRC_DST_EXTENSIONS = ("jpg", "json")
-f_toklens_originalsample = os.path.join(target_directory, "token_info_MR_sft_780k_8k.txt")
-PACKED_LENGTH = 8192
+# PACKED_LENGTH = 8192
 dst_dir = os.path.join(target_directory,newDir)
-MAX_WORKERS = 96  # 线程池大小（根据CPU核心数和IO性能调整）
+MAX_WORKERS = os.cpu_count()  # 线程池大小（根据CPU核心数和IO性能调整）
 
 
 """
@@ -167,7 +173,7 @@ def filter_filenames(filenames, prefix, exclude_suffix):
 def get_random_prompts(prompts, n):
     if n > len(prompts):
         # 允许重复
-        return random.choices(prompts, k=n)0
+        return random.choices(prompts, k=n)
     else:
         # 不允许重复
         return random.sample(prompts, n)
@@ -582,7 +588,7 @@ if __name__ == "__main__":
         return bin_boxes
 
     # bin_boxs = load_bin_boxes("./s2_ckpt/bins_boxs_8k.pkl")
-    bin_boxs = load_bin_boxes("./s2_ckpt/bins_boxs_mr_sft_8k.pkl")
+    bin_boxs = load_bin_boxes(target_directory / 'bins_boxs.pkl')
     
     # total_knapsacks = len(idx_knapsacks)
     total_knapsacks = len(bin_boxs)

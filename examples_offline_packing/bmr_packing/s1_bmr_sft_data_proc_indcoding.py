@@ -1,10 +1,25 @@
 import json
 import os
+import yaml
 import shutil
 import logging
+import jsonlines
+from pathlib import Path
+from joblib import Parallel, delayed
 from concurrent.futures import ThreadPoolExecutor
-from multiprocessing import Manager, cpu_count, Process
+from multiprocessing import Manager, cpu_count, Process, Pool
 from tqdm import tqdm
+
+
+# ✅ 加载配置文件
+CONFIG_PATH = Path(__file__).parent.joinpath('configs/s1_config_BMR_sft_780k.yaml')
+if not CONFIG_PATH.exists():
+    raise FileNotFoundError(f"配置文件不存在: {CONFIG_PATH}")
+with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+    cfg = yaml.safe_load(f)
+
+DEFAULT_DIRECTORY = Path(cfg['data']['directory'])
+JSON_DIR = DEFAULT_DIRECTORY.parent.joinpath('jsonl')
 
 # 1）__img--output 独立进行编号
 
@@ -14,10 +29,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger()
 
+
+def read_jsonl(path):
+    with jsonlines.open(path, 'r') as reader:
+        return list(reader)
+
+def load_jsonl_dir(jsonl_dir):
+    files = sorted(Path(jsonl_dir).glob('**/*.jsonl'))
+    n_jobs = min(os.cpu_count(), len(files))
+
+    data = []
+    with Pool(processes=n_jobs) as pool:
+        for part in tqdm(pool.imap_unordered(read_jsonl, files), total=len(files)):
+            data.extend(part)
+    return data
+
+
 # ---------- 工具 ----------
 def extract_filename_without_ext(image_path: str) -> str:
     return os.path.splitext(os.path.basename(image_path))[0]
-
 
 
 # ---------------------------- patch 1 ----------------------------
@@ -75,6 +105,7 @@ def _process_single_item(args):
             logger.warning(f"图片不存在：{src_path}")
             continue
         old_name = os.path.basename(src_path)
+        old_name = '_'.join(Path(src_path).parts[-2:])
         # new_name = _unique_filename(old_name)          # 可能改名
         new_name = _unique_filename(old_name, name_counter, name_lock)
         new_image_basenames.append(new_name)
@@ -143,8 +174,9 @@ def _worker_process(job_queue, result_list, base_dir, output_dir,
 def split_json_file(fin_name, rel_img_path=None, *, chunk_dim=1000, m=8):
     # 读数据
     try:
-        with open(fin_name, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        # with open(fin_name, 'r', encoding='utf-8') as f:
+        #     data = json.load(f)
+        data = load_jsonl_dir(fin_name)
     except Exception as e:
         logger.error(f"读取 JSON 失败: {e}")
         return set()
@@ -202,10 +234,11 @@ def split_json_file(fin_name, rel_img_path=None, *, chunk_dim=1000, m=8):
 # ---------- 脚本 ----------
 if __name__ == "__main__":
     # f_json = "/vlm/data/llava_next_500/sampled_data.json"
-    f_json = "/data_1/llava_next_raw_full/megatron_format_780k.json"
+    # f_json = "/nas_train/app.e0016372/datasets/LLaVA-OneVision-1.5-Instruct-Data/jsonl"
+    # f_json = '/nas_train/app.e0016372/datasets/LLaVA-OneVision-1.5-Instruct-Data/temp/jsonl'
     rel_img = "images"
     res = split_json_file(
-        f_json,
+        JSON_DIR,
         "images",
         chunk_dim=2000,
         m=8

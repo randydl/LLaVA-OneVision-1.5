@@ -39,7 +39,7 @@ parser.add_argument("--log-level", type=str, default=None,
 args = parser.parse_args()
 
 # ✅ 加载配置文件
-CONFIG_PATH = Path(args.config)
+CONFIG_PATH = Path(__file__).parent.joinpath('configs/s1_config_BMR_sft_780k.yaml')
 if not CONFIG_PATH.exists():
     raise FileNotFoundError(f"配置文件不存在: {CONFIG_PATH}")
 with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
@@ -51,8 +51,10 @@ task_type = cfg['sample']['task_type']
 DEL_ONE_TOKEN = cfg['sample']['del_one_token']
 
 DEFAULT_DIRECTORY = Path(cfg['data']['directory'])
-OUTPUT_FILE = Path(cfg['data']['output_base'])
-TOKEN_INFO_FILE = Path(cfg['data']['output_token'])
+OUTPUT_DIR = DEFAULT_DIRECTORY.parent.joinpath('output_dir')
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_FILE = OUTPUT_DIR.joinpath(cfg['data']['output_base'])
+TOKEN_INFO_FILE = OUTPUT_DIR.joinpath(cfg['data']['output_token'])
 CKPT_DIR = cfg['model']['checkpoint']
 MIN_PIXELS = cfg['image']['min_pixels']
 MAX_PIXELS = cfg['image']['max_pixels']
@@ -66,7 +68,7 @@ MIN_WORKERS = cfg['processing']['min_workers']
 MAX_WORKERS = cfg['processing']['max_workers']
 use_shm = cfg['logging']['use_shm']
 log_level = cfg['logging']['level']
-log_file = cfg['logging']['file']
+log_file = OUTPUT_DIR.joinpath(cfg['logging']['file'])
 if args.log_level:
     log_level = args.log_level.upper()
 
@@ -197,8 +199,8 @@ def process_sample(json_path, img_path, processor):
 
                 return image
 
-            if image_resolution:
-                img_path = baidu_img_proc(img_path, image_resolution)
+            # if image_resolution:
+            #     img_path = baidu_img_proc(img_path, image_resolution)
                 
             
             img_input = fetch_image({

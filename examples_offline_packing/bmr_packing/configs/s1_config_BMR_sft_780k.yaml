@@ -1,7 +1,8 @@
 # 数据路径配置
 data:
   # 数据样本目录
-  directory: "/data_1/llava_next_raw_full/split_json_files/"
+  # directory: "/nas_train/app.e0016372/datasets/LLaVA-OneVision-1.5-Instruct-Data/split_json_files"
+  directory: "/nas_train/app.e0016372/datasets/LLaVA-OneVision-1.5-Instruct-Data/temp/split_json_files"
   # directory: "/vlm/data/llava_next_500/split_json_files"
   # 存储配对文件名的临时文件
   output_base: "base_name_v4_MR_sft_780k_8k.txt"
@@ -10,11 +11,11 @@ data:
 
 # 模型路径
 model:
-  checkpoint: "/vlm/xiangan/pretrain_models/rice_vl/rice_vl_rice_300m_qwen2.5_7b_adapter_v1_fixed_tokenizer_huggingface"
+  checkpoint: "/nas_train/app.e0016372/models/LLaVA-OneVision-1.5-4B-Instruct"
 
 sample:
   # 训练数据的最大长度
-  max_len: 8192
+  max_len: 16384
   del_one_token: false
   # 决定解析方式
   task_type: sft 
@@ -25,7 +26,7 @@ sample:
 image:
   baidu_resolution: 1800 # baidu 代码中的限制参数（null）
   min_pixels: 3136   # 4*28*28
-  max_pixels: 4014080 # 5120*28*28(4014080,8192)
+  max_pixels: 2560000 # 5120*28*28(4014080,8192)
   # 最大宽高比限制（超过此值的图片将被过滤）,这是隐含信息（qwen vl自己处理）
   max_aspect_ratio: 200
 
@@ -48,6 +49,6 @@ logging:
   # 日志级别（DEBUG, INFO, WARNING, ERROR, CRITICAL）
   level: "INFO"
   # 日志文件路径
-  file: "./logs/s1_processing_MR_sft_780k_8k.log"
+  file: "s1_processing_MR_sft_780k_8k.log"
   # 是否使用 /dev/shm 作为临时目录
   use_shm: false
