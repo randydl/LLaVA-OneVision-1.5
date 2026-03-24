@@ -116,7 +116,7 @@ def convert_to_wds(args):
                 sample=construct_sample_caption(args, entry)
                 sink.write(sample)
                 
-        write_config(EPath(args.output_dir).absolute(), args.media,
+        write_config(EPath(Path(args.output_dir).resolve()), args.media,
                      template_func=sample_loader_template_caption,
                      class_name="PackedCaptioningSample")   
     print(f"Dataset successfully converted to wds")
@@ -158,7 +158,7 @@ def write_config(path: EPath, media=None, template_func=None, class_name=None):
 def _add_arguments(parser: argparse.ArgumentParser):
     
     input_token_file ,_,MAX_TOKEN_LEN,save_files_dir,big_dir,DEFAULT_DIRECTORY= get_init_file()
-    output_dir=DEFAULT_DIRECTORY+'_wds'
+    output_dir=str(DEFAULT_DIRECTORY)+'_wds'
     last_save_dir_json=os.path.join(save_files_dir,"row_packing_jsons")
     last_save_dir_image=os.path.join(save_files_dir,"row_packing_images")
     
