@@ -31,6 +31,7 @@ from typing_extensions import override
 
 from aiak_training_llm.data.multimodal import MultiMixQASample
 from aiak_training_llm.data.multimodal.length_sort_dataset import LengthPoolSortDataset
+from aiak_training_llm.data.multimodal.packed_sort_dataset import PackedSeparateSortDataset
 from aiak_training_llm.utils import constants, get_chat_template
 from transformers import AutoProcessor
 
@@ -768,11 +769,21 @@ class Qwen2VLTaskEncoder(TaskEncoder):
 
         # Insert pool sorting before entering BatchDataset
         if getattr(self.args, "length_sort_pool_size", 0) and self.args.length_sort_pool_size > 0:
-            dataset = LengthPoolSortDataset(
+
+            def sort_key_fn(s):
+                return getattr(s, "total_len", len(getattr(s, "tokens")))
+
+            sort_ascending = not getattr(self.args, "length_sort_desc", False)
+            sort_cls = (
+                PackedSeparateSortDataset
+                if getattr(self.args, "length_sort_separate_packed", False)
+                else LengthPoolSortDataset
+            )
+            dataset = sort_cls(
                 dataset,
                 pool_size=self.args.length_sort_pool_size,
-                key_fn=lambda s: getattr(s, "total_len", len(getattr(s, "tokens"))),
-                ascending=not getattr(self.args, "length_sort_desc", False),
+                key_fn=sort_key_fn,
+                ascending=sort_ascending,
                 worker_config=worker_config,
             )
         dataset = self.build_batch(

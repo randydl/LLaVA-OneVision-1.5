@@ -14,288 +14,288 @@ Use this skill when validating whether a HuggingFace checkpoint and a Megatron/M
 
 在这个仓库里，需要验证 HuggingFace checkpoint 和 Megatron/MCore checkpoint 是否行为一致时，使用这个 skill。
 
-This skill is specifically for:
+There are two test systems in this repo:
+
+本仓库有两套测试系统：
+
+### 1. pytest test suite (recommended / 推荐)
+
+- `tests/conftest.py` — session fixtures, HF→mcore conversion, Megatron initialization
+- `tests/test_model_consistency.py` — 6 integration tests
+- `tests/test_consistency_utils.py` — 10 utility functions + 11 unit tests
+- `tests/run_consistency_tests.sh` — shell wrapper with auto-conversion + torchrun
+
+### 2. Legacy monolithic script (reference only / 仅供参考)
 
 - `examples/llava_onevision2/check_model_consistency.sh`
 - `examples/llava_onevision2/check_model_consistency.py`
-- TP/PP combinations such as `tp1pp1`, `tp2pp1`, `tp1pp2`, `tp2pp2`
 
-这个 skill 专门用于：
+## Architecture / 架构
 
-- `examples/llava_onevision2/check_model_consistency.sh`
-- `examples/llava_onevision2/check_model_consistency.py`
-- `tp1pp1`、`tp2pp1`、`tp1pp2`、`tp2pp2` 这类 TP/PP 组合
+### Direction: HF → mcore
 
-## What this test actually checks / 这个测试实际在检查什么
+The pytest suite assumes **only the HF checkpoint exists** as input. The mcore checkpoint is **generated automatically** via conversion.
 
-The consistency test is not a single metric. It checks multiple stages:
+pytest 测试套件假设 **只有 HF checkpoint** 作为输入。mcore checkpoint 通过转换 **自动生成**。
 
-这个一致性测试不是单一指标，而是多阶段检查：
+```
+HF auto-model (input)
+  → convert_4b_hf_to_mcore.sh (auto-run by conftest.py or run_consistency_tests.sh)
+    → mcore checkpoint (generated)
+      → both models loaded → 6 tests run
+```
 
-1. `weight_consistency`
-   - whether mapped HF and Megatron weights match
-2. `encoder_layer_wise`
-   - whether encoder layer debug activations match layer by layer
-3. `vision_encoder_layerwise`
-   - whether key vision debug tensors match
-4. `mllm_after_merger`
-   - whether vision output after merger/adapter matches
+### Test file structure / 测试文件结构
 
-1. `weight_consistency`
-   - 映射后的 HF 和 Megatron 权重是否一致
-2. `encoder_layer_wise`
-   - encoder 层级 debug 激活是否逐层一致
-3. `vision_encoder_layerwise`
-   - vision 关键 debug 张量是否一致
-4. `mllm_after_merger`
-   - merger/adapter 之后的视觉输出是否一致
+```
+tests/
+├── __init__.py                    # empty package init
+├── conftest.py                    # 9 session fixtures (209 lines)
+├── test_consistency_utils.py      # 10 utilities + 11 unit tests (373 lines, DO NOT MODIFY)
+├── test_model_consistency.py      # 6 integration tests (402 lines)
+└── run_consistency_tests.sh       # shell wrapper (60 lines)
+```
 
-Do not interpret `overall_status` without checking which sub-test failed.
+### Fixtures in conftest.py / conftest.py 中的 fixtures
 
-不要只看 `overall_status`，一定要看具体是哪个子测试失败。
+| Fixture | Scope | Description |
+|---|---|---|
+| `hf_model_path` | session | HF auto-model directory (env: `HF_MODEL_PATH`) |
+| `converted_mcore_path` | session | Auto-converts HF→mcore if `MCORE_CHECKPOINT_PATH` not set |
+| `preprocessor_path` | session | Processor path (defaults to `HF_MODEL_PATH`) |
+| `test_image_path` | session | Local test image (default: `asset/performance.png`) |
+| `megatron_init` | session | Initializes Megatron via sys.argv override |
+| `hf_config` | session | `LlavaOnevision2Config.from_pretrained()` |
+| `hf_vision_model` | session | `LlavaOnevision2Model.from_pretrained().visual` on cuda bf16 |
+| `hf_cond_gen_model` | session | `LlavaOnevision2ForConditionalGeneration` on cuda bf16 |
+| `mcore_model` | session | Megatron `get_model()` + `load_checkpoint()` |
+| `hf_processor` | session | `AutoProcessor.from_pretrained()` |
 
-## Recommended command pattern / 推荐命令模板
+## What the 6 tests check / 6 个测试检查什么
 
-Run inside the container.
+### test_weight_consistency (fast)
 
-需要在容器里运行。
+Compares all mapped weights between HF and mcore vision models:
 
-Set these first:
+比较 HF 和 mcore 视觉模型之间所有映射权重：
 
-先设置这些环境变量：
+- Patch embedding (conv weight + bias)
+- Class embedding
+- Pre/post layer norms
+- Per-layer (24 layers): QKV weight/bias, projection, MLP fc1/fc2, layer norms
+- QKV layout conversion via `convert_hf_qkv_to_mcore_layout` (interleaved Q/K/V per head)
+- TP-aware gathering via `_maybe_gather_tp_weight`
+- Threshold: cosine > 0.9999
+
+### test_vision_encoder_consistency_336px (fast)
+
+Compares `forward_debug` outputs at 4 strategic points:
+
+在 4 个关键点比较 `forward_debug` 输出：
+
+- `after_patch_embed` — patch embedding output
+- `rotary_pos_emb` — rotary position embedding (aligned via `align_rotary_debug_tensors`)
+- `after_pre_layernorm` — after pre-layernorm
+- `before_adapter` — final encoder output before adapter
+- Threshold: cosine > 0.99
+
+### test_mllm_after_merger_336px (fast)
+
+Compares vision + adapter pipeline output:
+
+比较视觉 + adapter pipeline 输出：
+
+- HF: `forward_debug['after_merger']`
+- mcore: `vision_model()` → `adapter()`
+- Threshold: cosine > 0.99
+
+### test_encoder_layer_wise_consistency (slow)
+
+Layer-by-layer comparison of all 24 encoder layers:
+
+逐层比较所有 24 个 encoder 层：
+
+- `layer_{i}_input` and `layer_{i}_output` for each layer
+- `input_hidden_states` — initial encoder input
+- `final_output` — final encoder output
+- Uses `align_encoder_debug_tensors` for shape alignment
+- Threshold: cosine > 0.99
+
+### test_llm_output_consistency (slow)
+
+End-to-end LLM logits comparison:
+
+端到端 LLM logits 比较：
+
+- Loads `LlavaOnevision2ForConditionalGeneration` (HF) and full mcore model
+- Tokenizes prompt with image, runs forward pass on both
+- Compares output logits
+- Threshold: cosine > 0.99
+
+### test_hf_loading_consistency (slow)
+
+Validates HF model loading methods are equivalent:
+
+验证 HF 模型加载方式等价：
+
+- `from_pretrained()` vs manual `load_file()` from safetensors
+- Compares all vision weights (exact match via `np.allclose`)
+- Compares `forward_debug` outputs (cosine > 0.9999)
+
+## Environment variables / 环境变量
+
+| Variable | Default | Description |
+|---|---|---|
+| `HF_MODEL_PATH` | `/ov2/pretrain_models/llava_onevision2/llava_onevision2_4b/auto-model` | HF checkpoint (the only required input) |
+| `MCORE_CHECKPOINT_PATH` | (auto-generated) | Set to skip conversion |
+| `PREPROCESSOR_PATH` | `$HF_MODEL_PATH` | Image processor path |
+| `TEST_IMAGE_PATH` | `$REPO_ROOT/asset/performance.png` | Local test image |
+| `CONSISTENCY_TEST_TP` | `1` | Tensor parallel size |
+| `CONSISTENCY_TEST_PP` | `1` | Pipeline parallel size |
+| `AIAK_TRAINING_PATH` | `$REPO_ROOT` | AIAK training framework root |
+| `AIAK_MAGATRON_PATH` | `$REPO_ROOT/aiak_megatron` | AIAK Megatron path |
+| `MASTER_PORT` | `29500` | Distributed master port |
+
+## How to run / 怎么跑
+
+All Python must run inside the container `llava_megatron_container_ax`.
+
+所有 Python 必须在容器 `llava_megatron_container_ax` 内运行。
+
+### Quick: run non-slow tests with auto-conversion
 
 ```bash
-export MODEL_NAME="llava-onevision2-4b"
-export HF_MODEL_PATH="/path/to/hf_checkpoint"
-export MCORE_CHECKPOINT_PREFIX="/path/to/mcore_checkpoint_prefix"
-export TEST_IMAGE_PATH="/workspace/LLaVA-OneVision-2/asset/performance.png"
-export TEST_PROFILE="low_vram"
-export AIAK_TRAINING_PATH="/workspace/LLaVA-OneVision-2"
+# Inside container, from repo root:
+bash tests/run_consistency_tests.sh
 ```
 
-Then run one of:
-
-然后运行以下之一：
+### Run all tests including slow
 
 ```bash
-export MASTER_PORT=26511; bash examples/llava_onevision2/check_model_consistency.sh 1 1
-export MASTER_PORT=26512; bash examples/llava_onevision2/check_model_consistency.sh 2 1
-export MASTER_PORT=26513; bash examples/llava_onevision2/check_model_consistency.sh 1 2
-export MASTER_PORT=26514; bash examples/llava_onevision2/check_model_consistency.sh 2 2
+bash tests/run_consistency_tests.sh -m ""
 ```
 
-The shell script resolves:
+### Custom TP/PP
 
-这个 shell 脚本会自动解析：
-
-- `MCORE_CHECKPOINT_PATH=${MCORE_CHECKPOINT_PREFIX}_tp${TP}_pp${PP}`
-
-So your checkpoint naming should match that convention.
-
-所以你的 checkpoint 命名应符合这个约定。
-
-## Checkpoint naming contract / checkpoint 命名约定
-
-Expected paths:
-
-期望路径：
-
-- `..._tp1_pp1`
-- `..._tp2_pp1`
-- `..._tp1_pp2`
-- `..._tp2_pp2`
-
-Example:
-
-例如：
-
-```text
-/foo/bar/iter_0001850_mcore_tp1_pp1
-/foo/bar/iter_0001850_mcore_tp2_pp1
-/foo/bar/iter_0001850_mcore_tp1_pp2
-/foo/bar/iter_0001850_mcore_tp2_pp2
+```bash
+TP=2 PP=1 MASTER_PORT=29501 bash tests/run_consistency_tests.sh
 ```
 
-## Local image rule / 本地图像规则
+### Skip conversion (pre-existing mcore checkpoint)
 
-Use a local image path.
-
-请使用本地图像路径。
-
-Do not rely on remote URLs in container runs.
-
-不要在容器运行时依赖外链图片。
-
-Recommended default:
-
-推荐默认值：
-
-```text
-/workspace/LLaVA-OneVision-2/asset/performance.png
+```bash
+MCORE_CHECKPOINT_PATH=/path/to/existing bash tests/run_consistency_tests.sh
 ```
 
-## How to read the result JSON / 怎么看结果 JSON
+### Run only unit tests (no GPU needed, works on host)
 
-The result file is under:
-
-结果文件位于：
-
-```text
-outputs/model_consistency_check/results_*.json
+```bash
+pytest tests/test_consistency_utils.py -v
 ```
 
-Read these in order:
+### Run specific integration test
 
-按以下顺序看：
+```bash
+bash tests/run_consistency_tests.sh -k test_weight_consistency
+```
 
-### 1. `overall_status`
+## What run_consistency_tests.sh does / run_consistency_tests.sh 做了什么
 
-This is only the final summary.
+1. Validates `HF_MODEL_PATH` and `TEST_IMAGE_PATH` exist
+2. If `MCORE_CHECKPOINT_PATH` is empty, runs `convert_4b_hf_to_mcore.sh` to generate it
+3. Exports all env vars for conftest.py
+4. Sets `PYTHONPATH` to include `ds/llavaonevision2`, `aiak_megatron`, repo root
+5. Launches `torchrun --nproc_per_node=$((TP*PP))` with pytest
 
-这只是最终汇总状态。
+## What conftest.py does for Megatron init / conftest.py 如何初始化 Megatron
 
-### 2. `tests.weight_consistency.status`
+Since pytest has its own arg parsing, Megatron CLI args can't be passed via command line. The solution:
 
-If this fails, first suspect:
+由于 pytest 有自己的参数解析，Megatron CLI 参数不能通过命令行传递。解决方案：
 
-如果这个失败，优先怀疑：
+1. Shell script exports env vars (`HF_MODEL_PATH`, `MCORE_CHECKPOINT_PATH`, `CONSISTENCY_TEST_TP/PP`, etc.)
+2. `conftest.py` reads env vars, temporarily overrides `sys.argv` with constructed Megatron CLI args
+3. Calls `parse_arguments()` + `initialize_aiak_megatron()` inside the override
+4. Restores `sys.argv` afterward
 
-- wrong `MODEL_NAME`
-- wrong TP/PP checkpoint path
-- wrong weight mapping
-- TP shard not gathered before compare
+## How to interpret failures / 如何解读失败
 
-### 3. `tests.weight_consistency.weight_comparisons_summary`
+### Priority order for diagnosis / 诊断优先顺序
 
-Look at:
+1. **test_weight_consistency** — If this fails, all other tests are unreliable
+2. **test_vision_encoder_consistency_336px** — Strategic checkpoint comparison
+3. **test_mllm_after_merger_336px** — Vision + adapter pipeline health
+4. **test_encoder_layer_wise_consistency** — May fail due to debug alignment, not real bugs
+5. **test_llm_output_consistency** — Full end-to-end, most sensitive to any discrepancy
+6. **test_hf_loading_consistency** — HF-only test, independent of mcore
 
-关注：
+### Common failure causes / 常见失败原因
 
-- `mismatched`
-- `mismatches`
+| Symptom | Likely Cause | Fix |
+|---|---|---|
+| weight_consistency fails on QKV | QKV layout conversion bug | Check `convert_hf_qkv_to_mcore_layout` for num_heads |
+| weight_consistency fails on many keys | Wrong model / TP/PP mismatch | Verify `HF_MODEL_PATH` and conversion TP/PP |
+| vision_encoder rotary_pos_emb fails | Debug tensor shape mismatch | Check `align_rotary_debug_tensors` — HF `(1,S,64)` vs mcore `(S,32)` |
+| encoder_layer_wise late layers fail | Debug capture timing / layout | Usually not a real model bug if weight + merger pass |
+| llm_output shape mismatch | Wrong tokenization or attention mask | Check prompt formatting and `attention_mask.logical_not()` |
+| Megatron init fails | Wrong CLI args | Check `_build_megatron_cli_args` in conftest.py |
+| Conversion fails | Missing `AIAK_TRAINING_PATH` | Export it before running |
 
-If most weights match and a few keys are `hf_key_not_found`, check whether they are expected structural differences.
+### Key weight mapping / 关键权重映射
 
-如果大部分权重一致，只有少量 `hf_key_not_found`，先判断是不是预期中的结构差异。
+| HF Key | mcore Key |
+|---|---|
+| `embeddings.patch_embedding` | `patch_embed.proj` |
+| `embeddings.class_embedding` | `class_embedding` |
+| `layernorm_pre/post` | `pre_layernorm/post_layernorm` |
+| `encoder.layers.{i}.layer_norm1` | `decoder.layers.{i}.self_attention.linear_qkv.layer_norm` |
+| `encoder.layers.{i}.self_attn.qkv` | `decoder.layers.{i}.self_attention.linear_qkv` |
+| `encoder.layers.{i}.self_attn.proj` | `decoder.layers.{i}.self_attention.linear_proj` |
+| `encoder.layers.{i}.layer_norm2` | `decoder.layers.{i}.mlp.linear_fc1.layer_norm` |
+| `encoder.layers.{i}.mlp.fc1/fc2` | `decoder.layers.{i}.mlp.linear_fc1/fc2` |
 
-### 4. `tests.vision_encoder_layerwise`
+QKV weights need layout conversion: HF stores `[Q_all, K_all, V_all]`, mcore stores interleaved `[Q_h0, K_h0, V_h0, Q_h1, K_h1, V_h1, ...]`.
 
-This checks a few strategic tensors:
-
-这个测试关注几个关键张量：
-
-- `after_patch_embed`
-- `rotary_pos_emb`
-- `after_pre_layernorm`
-- `before_adapter`
-
-If only `rotary_pos_emb` fails, verify that both sides are compared in the same debug representation.
-
-如果只有 `rotary_pos_emb` 失败，先确认双方比较的是同一种 debug 表示。
-
-### 5. `tests.encoder_layer_wise`
-
-This is the strictest test.
-
-这是最严格的测试。
-
-Look at:
-
-关注：
-
-- `layer_comparisons_summary.mismatched_layers`
-- `layer_comparisons_summary.mismatch_details`
-
-If late layers fail while weight consistency passes, suspect debug capture semantics, tensor layout, or sequence-parallel / gather timing.
-
-如果后面几层失败、但权重一致性通过，优先怀疑 debug 捕获语义、张量布局、或者 sequence-parallel / gather 时机。
-
-### 6. `tests.mllm_after_merger.status`
-
-If this passes, the end-of-vision pipeline is usually healthy.
-
-如果这个通过，通常说明 vision pipeline 的最终输出链路基本健康。
-
-## Practical interpretation / 实际判断顺序
-
-Use this order when judging failures:
-
-判断失败时建议按这个顺序：
-
-1. `weight_consistency`
-2. `vision_encoder_layerwise`
-3. `mllm_after_merger`
-4. `encoder_layer_wise`
-
-Reason:
-
-原因：
-
-- weights failing usually means hard mismatch
-- final merger failing usually means real pipeline inconsistency
-- encoder-layer-wise failing can still be a debug-comparison issue rather than a true model bug
-
-- 权重失败通常说明是硬错误
-- merger 失败通常说明 pipeline 真有问题
-- `encoder_layer_wise` 失败有时只是 debug 比较口径问题，不一定是模型真错
+QKV 权重需要布局转换：HF 存储 `[Q_all, K_all, V_all]`，mcore 存储交织的 `[Q_h0, K_h0, V_h0, Q_h1, K_h1, V_h1, ...]`。
 
 ## Known repo-local lessons / 当前仓库已知经验
 
 ### 1. Rotary debug representation must be aligned
 
-HF and Megatron may expose different `rotary_pos_emb` debug shapes.
+HF and Megatron expose different `rotary_pos_emb` debug shapes:
 
-HF 和 Megatron 可能暴露不同形状的 `rotary_pos_emb` debug 张量。
-
-Example pattern:
-
-例如：
+HF 和 Megatron 暴露不同形状的 `rotary_pos_emb` debug 张量：
 
 - HF: `(1, S, 64)`
 - Megatron: `(S, 32)`
 
-Direct flatten+truncate comparison gives misleading cosine scores.
+The `align_rotary_debug_tensors` function handles this by squeezing batch dim and concatenating mcore's half-dim.
 
-直接 flatten + truncate 比较会得到误导性的 cosine。
+`align_rotary_debug_tensors` 函数通过去掉 batch 维度并拼接 mcore 的半维度来处理。
 
 ### 2. PP-aware testing is necessary
 
-When `PP > 1`, not every pipeline stage owns:
+When `PP > 1`, not every pipeline stage owns `vision_model`, `adapter`, or decoder post-process outputs. Tests must skip non-owner stages.
 
-当 `PP > 1` 时，不是每个 pipeline stage 都拥有：
-
-- `vision_model`
-- `adapter`
-- decoder post-process outputs
-
-So tests must skip non-owner stages instead of treating them as failures.
-
-所以测试必须对非 owner stage 做 skip，而不是直接判失败。
+当 `PP > 1` 时，不是每个 pipeline stage 都拥有 `vision_model`、`adapter` 或 decoder 后处理输出。测试必须跳过非 owner stage。
 
 ### 3. TP-aware weight comparison is necessary
 
-When `TP > 1`, do not compare a local TP shard directly against a full HF weight.
+When `TP > 1`, use `_maybe_gather_tp_weight` to gather shards before comparison. It gathers along first dim for QKV/FC1, last dim for proj/FC2.
 
-当 `TP > 1` 时，不能直接拿本地 TP shard 和完整 HF 权重比较。
+当 `TP > 1` 时，用 `_maybe_gather_tp_weight` 在比较前 gather shards。QKV/FC1 沿第一维 gather，proj/FC2 沿最后一维。
 
-Gather first along the correct dimension.
+### 4. HF and mcore use the same pixel value 2x2 memory layout
 
-必须先沿正确维度 gather。
+No pixel value conversion is needed between HF and mcore models.
 
-### 4. Encoder-layer-wise failures may still be debug-layout issues
+HF 和 mcore 模型使用相同的 2x2 内存布局，无需转换 pixel values。
 
-If:
+### 5. Encoder-layer-wise failures may be debug-layout issues
 
-如果：
+If weight_consistency + merger pass but encoder_layer_wise fails in late layers, suspect debug capture semantics rather than real model bugs.
 
-- weight consistency passes
-- vision encoder strategic checks pass
-- merger passes
-- but `encoder_layer_wise` fails in later layers
-
-then the issue may still be in debug tensor alignment or capture timing, not in the actual end-to-end model behavior.
-
-那么问题仍有可能是 debug 张量对齐或捕获时机，而不是实际端到端模型行为错误。
+如果 weight_consistency + merger 通过但 encoder_layer_wise 在后面层失败，优先怀疑 debug 捕获语义而非模型真错。
 
 ## Minimal troubleshooting checklist / 最小排查清单
 
@@ -303,34 +303,18 @@ If the run fails, check in this order:
 
 如果运行失败，按以下顺序排查：
 
-1. Is `MODEL_NAME` correct for the checkpoint size?
-2. Does `MCORE_CHECKPOINT_PREFIX` resolve to the right `*_tp${TP}_pp${PP}` directory?
-3. Is `TEST_IMAGE_PATH` local and valid?
+1. Is the container running? `docker exec -it llava_megatron_container_ax bash`
+2. Does `HF_MODEL_PATH` exist and contain safetensors files?
+3. Did the HF→mcore conversion succeed? Check stderr output.
 4. Does the container have enough GPUs for `TP * PP`?
-5. Did `weight_consistency` fail because of real mismatches, or only a few expected missing keys?
-6. Did a debug-only comparison fail due to layout or representation mismatch?
+5. Is `MASTER_PORT` already in use? Try a different port.
+6. Did `test_weight_consistency` fail? → Fix this first before investigating other tests.
+7. Is the failure in a `@pytest.mark.slow` test? → Run fast tests first with default marker filter.
 
-1. `MODEL_NAME` 是否与 checkpoint 尺寸匹配？
-2. `MCORE_CHECKPOINT_PREFIX` 是否能正确解析到 `*_tp${TP}_pp${PP}`？
-3. `TEST_IMAGE_PATH` 是否为有效本地路径？
+1. 容器是否在运行？`docker exec -it llava_megatron_container_ax bash`
+2. `HF_MODEL_PATH` 是否存在且包含 safetensors 文件？
+3. HF→mcore 转换是否成功？检查 stderr 输出。
 4. 容器 GPU 数量是否满足 `TP * PP`？
-5. `weight_consistency` 是真实大面积失败，还是只是少量预期缺 key？
-6. 失败的是不是仅仅是 debug 比较口径问题？
-
-## Expected output when using this skill / 使用这个 skill 时的期望输出
-
-When asked to run or analyze a consistency test, return:
-
-当被要求运行或分析一致性测试时，应返回：
-
-1. the exact command used
-2. the TP/PP combination
-3. the result file path
-4. the per-test statuses
-5. the first failing test to investigate next
-
-1. 实际执行命令
-2. 使用的 TP/PP 组合
-3. 结果文件路径
-4. 各子测试状态
-5. 下一步最值得继续排查的首个失败项
+5. `MASTER_PORT` 是否被占用？换一个端口试试。
+6. `test_weight_consistency` 是否失败？→ 先修这个再看其他测试。
+7. 失败的是否是 `@pytest.mark.slow` 测试？→ 先用默认 marker 跑 fast 测试。

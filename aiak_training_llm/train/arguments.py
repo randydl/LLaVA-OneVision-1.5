@@ -361,6 +361,8 @@ def _add_extra_training_args(parser: argparse.ArgumentParser):
                     help=">0 启用局部长度池化排序；推荐为 batch_size 的 10~50 倍")
     group.add_argument("--length-sort-desc", action="store_true",
                     help="按长度从长到短")
+    group.add_argument("--length-sort-separate-packed", action="store_true",
+                    help="分离 packed/non-packed 样本独立排序，减少跨 rank 计算量差异")
 
     return parser
 
