@@ -1,4 +1,4 @@
-hf_data: "/nas_train/app.e0031982/datasets/mvp-lab/LLaVA-OneVision-1.5-Mid-Training-85M/coyo"
+hf_data: "/nas_train/app.e0031982/datasets/mvp-lab/LLaVA-OneVision-1.5-Mid-Training-85M/test"
 data:
   directory: "/nas_train/app.e0016372/datasets/LLaVA-OneVision-1.5-Mid-Training-85M"
   # Temporary file to store paired file names

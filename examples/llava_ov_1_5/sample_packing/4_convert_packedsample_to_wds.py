@@ -14,7 +14,7 @@ sys.path.append('/vlm/yinxie/code/AIAK-Megatron/megatron')
 
 from megatron.energon.epathlib import EPath
 from megatron.energon.flavors import BaseWebdatasetFactory
-from megatron.energon.flavors.webdataset import MAIN_FOLDER_NAME
+from megatron.energon.flavors.webdataset.config import MAIN_FOLDER_NAME
 from megatron.energon.flavors.webdataset.prepare import WebdatasetPreparator
 from megatron.energon.flavors.webdataset.structs import ShardInfo, WebdatasetInfo, WebdatasetSplits
 from tool import get_init_file
