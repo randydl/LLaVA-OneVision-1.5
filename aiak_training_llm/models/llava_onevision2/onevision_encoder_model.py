@@ -11,13 +11,11 @@ from aiak_training_llm.models.llava_onevision2.llava_onevision2_config import (
 )
 from aiak_training_llm.models.llava_onevision2.vision_transformer_block import TransformerBlock
 
-
-def _load_state_dict_hook_ignore_extra_state(module, incompatible_keys):
-    keys_to_remove = [key for key in incompatible_keys.missing_keys if "pre_layernorm._extra_state" in key]
-
-    for key in keys_to_remove:
-        if key in incompatible_keys.missing_keys:
-            incompatible_keys.missing_keys.remove(key)
+import os
+TE_EXTRA_STATE_CHECK = int(os.environ.get("TE_EXTRA_STATE_MISSING_CHECK",0))==1
+if TE_EXTRA_STATE_CHECK:
+    from aiak_training_llm.utils.te_env import add_te_filter_module_and_op
+    from megatron.training.fix_te import _load_state_dict_hook_ignore_extra_state 
 
 
 class PatchEmbed(torch.nn.Module):
@@ -238,7 +236,6 @@ class OneVisionEncoderModel(VisionModule):
         spatial_merge_size: int = 2,
     ) -> None:
         super().__init__(config)
-        self.register_load_state_dict_post_hook(_load_state_dict_hook_ignore_extra_state)
         self.model_type = ModelType.encoder_or_decoder
         self.spatial_merge_size = spatial_merge_size
         self.patch_size = config.patch_size
@@ -276,10 +273,19 @@ class OneVisionEncoderModel(VisionModule):
         # without SP-aware parameter marking the per-rank gradients would not be
         # reduced, leading to incorrect weight updates).  eps=1e-4 matches the
         # original torch.nn.LayerNorm value.
-        self.pre_layernorm = TENorm(
-            config, config.hidden_size, eps=1e-4
-        )  # TODO: Confirm that config.normalization and hidden_size are correctly set for TENorm.
-
+        self.pre_layernorm = TENorm(config, config.hidden_size, eps=1e-4)    # TODO: Confirm that config.normalization and hidden_size are correctly set for TENorm.
+        
+        if TE_EXTRA_STATE_CHECK:
+            add_te_filter_module_and_op("vision_model", "pre_layernorm")
+            
+            # Register hook to ignore missing _extra_state keys when loading old checkpoints
+            self.register_load_state_dict_post_hook(
+                lambda module, incompatible_keys: _load_state_dict_hook_ignore_extra_state(
+                    module, incompatible_keys, 
+                    modules_to_filter=["vision_model"], 
+                    ops_to_filter=["pre_layernorm"]
+                )
+            )
     def set_input_tensor(self, input_tensor: torch.Tensor) -> None:
         """
         Set input tensor for the model (used in pipeline parallelism).

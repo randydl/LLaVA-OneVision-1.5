@@ -35,6 +35,11 @@ from .one_logger_utils import on_save_checkpoint_start, on_save_checkpoint_succe
 from . import wandb_utils
 from . import ft_integration
 
+TE_EXTRA_STATE_CHECK = int(os.environ.get("TE_EXTRA_STATE_MISSING_CHECK",0))==1
+if TE_EXTRA_STATE_CHECK:
+    from aiak_training_llm.utils.te_env import get_te_filter_modules_and_ops
+    from megatron.training.fix_te import filter_extra_state
+
 # [ModelOpt]: Import
 try:
     from modelopt.torch.opt.plugins import (
@@ -1331,6 +1336,30 @@ def load_checkpoint(
 
             # When "--fp8-param-gather" is disabled, this function doesn't modify anything.
             fix_fp8_params_lose_precision_when_loading_dist_ckpt(load_kwargs["sharded_state_dict"])
+
+            if TE_EXTRA_STATE_CHECK:
+                try:
+                    mods, ops = get_te_filter_modules_and_ops()
+                    if len(mods) > 0 and len(ops) > 0:
+                        print_rank_0(
+                            f"Filtering out modules {mods} and ops {ops} from the loaded sharded state dict for dist checkpoint loading."
+                        )
+                        load_kwargs["sharded_state_dict"] = filter_extra_state(
+                            load_kwargs["sharded_state_dict"],
+                            modules_to_filter=mods,
+                            ops_to_filter=ops,
+                        )
+                except ValueError as e:
+                    # Fall back to no filtering if TE filter configuration is malformed.
+                    print_rank_0(
+                        f"Warning: get_te_filter_modules_and_ops() failed with ValueError ({e}); "
+                        "skipping TE-based filtering for dist checkpoint loading."
+                    )
+                    logger.warning(
+                        "get_te_filter_modules_and_ops() raised ValueError during dist-ckpt load; "
+                        "falling back to no TE filtering.",
+                        exc_info=e,
+                    )
 
     state_dict, checkpoint_name, release, ckpt_type = _load_base_checkpoint(
         load_dir, args, rank0=False, checkpointing_context=checkpointing_context, **load_kwargs
