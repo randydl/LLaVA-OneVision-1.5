@@ -182,7 +182,7 @@ def llava_onevision2_8b():
         qk_layernorm=True,
         kv_channels=128,
         add_qkv_bias=False,
-        rotary_base=1000000,
+        rotary_base=8000000,
     )
 
 
