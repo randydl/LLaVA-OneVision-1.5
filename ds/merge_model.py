@@ -440,9 +440,9 @@ if __name__ == "__main__":
     os.environ['https_proxy'] = 'http://172.19.92.23:13128'
 
     parser = argparse.ArgumentParser(description="Merge ViT and LLM models")
-    parser.add_argument("--vit_path", type=str, default="rice-vit-large-patch14-560", help="Path to the ViT model")
-    parser.add_argument("--llm_path", type=str, default="Qwen3-8B", help="Path to the LLM model")
-    parser.add_argument("--output_path", type=str, default="LLaVA-OneVision-1.5-8B", help="Path to save the merged model")
+    parser.add_argument("--vit_path", type=str, default="DeepGlint-AI/rice-vit-large-patch14-560", help="Path to the ViT model")
+    parser.add_argument("--llm_path", type=str, default="Qwen/Qwen3-32B", help="Path to the LLM model")
+    parser.add_argument("--output_path", type=str, default="lmms-lab/LLaVA-OneVision-1.5-32B", help="Path to save the merged model")
     parser.add_argument("--adapter_path", type=str, default="", help="Path to the Adapter model (optional)")
     parser.add_argument("--img_path", type=str, default="asset/demo.jpeg", help="Path to the image file")
     parser.add_argument("--sample_text", type=str, default="Hello, my dog is cute", help="Sample text for LLM consistency check")

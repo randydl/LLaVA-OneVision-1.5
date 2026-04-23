@@ -16,8 +16,8 @@ from transformers.configuration_utils import PretrainedConfig, layer_type_valida
 from transformers.modeling_rope_utils import rope_config_validation
 from transformers.utils import logging
 
-
 logger = logging.get_logger(__name__)
+
 
 class RiceConfig(PretrainedConfig):
     model_type = "rice_vit"
@@ -142,7 +142,7 @@ class LLaVAOneVision1_5_TextConfig(PretrainedConfig):
             Token index used as placeholder for image embeddings.
         video_token_id (`int`, *optional*):
             Token index used as placeholder for video embeddings.
-"""
+    """
 
     model_type = "LLaVAOneVision1_5_text"
     base_config_key = "text_config"
@@ -286,4 +286,7 @@ class Llavaonevision1_5Config(PretrainedConfig):
         super().__init__(**kwargs)
 
 
-__all__ = ["Llavaonevision1_5Config", "LLaVAOneVision1_5_TextConfig"]
+__all__ = [
+    "Llavaonevision1_5Config", 
+    "LLaVAOneVision1_5_TextConfig"
+]

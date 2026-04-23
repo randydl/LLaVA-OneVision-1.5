@@ -16,7 +16,7 @@ conda activate swift
 
 cd ../examples/llava_ov_1_5/sample_packing
 python ./huggingface_data_parse.py
-python ./1_s1_get_tokenlens_v3-sft.py
-python ./2_do_hashbacket.py
-python ./3_s2_prepare_rawsamples-vqa.py
-python ./4_convert_packedsample_to_wds.py
+# python ./1_s1_get_tokenlens_v3-sft.py
+# python ./2_do_hashbacket.py
+# python ./3_s2_prepare_rawsamples-vqa.py
+# python ./4_convert_packedsample_to_wds.py

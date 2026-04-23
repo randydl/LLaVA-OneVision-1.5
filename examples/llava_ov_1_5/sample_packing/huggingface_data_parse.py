@@ -5,6 +5,8 @@ import os
 from functools import partial
 from pathlib import Path
 from tqdm import tqdm
+import hashlib
+import shutil
 import json
 import re
 import numpy as np
@@ -50,11 +52,22 @@ def check_image(image_path):
 
 def parse_item(item, dst_dir):
     try:
-        name = item['id'].replace('/', '_')
-        name = os.path.splitext(name)[0]
-
+        if 'id' in item:
+            name = item['id'].replace('/', '_')
+            name = os.path.splitext(name)[0]
+        else:
+            raw = item['caption']
+            name = hashlib.md5(raw.encode('utf-8')).hexdigest()
+            
         image_path = os.path.join(dst_dir, name + '.jpg')
-        item['image'].save(image_path)
+        image = item['image'].convert('RGB')
+        image.save(
+            image_path,
+            quality=95,
+            subsampling=0,
+            optimize=True,
+            progressive=False
+        )
 
         if cfg['data']['filter_with_caption'] and not check_caption(item['caption']):
             return
@@ -75,7 +88,7 @@ def parse_item(item, dst_dir):
             json.dump(json_data, f, ensure_ascii=False)
 
     except Exception as e:
-        print(f"{item['id']} has exception: {e}")
+        print(f"{name} has exception: {e}")
 
 
 def process_parquet(parquet_path, dst_dir):
@@ -94,9 +107,12 @@ def process_parquet(parquet_path, dst_dir):
 
 
 def main():
-    data_root = Path(cfg['hf_data'])
-    # data_root = Path('/nas_train/app.e0016372/datasets/LLaVA-OneVision-1.5-Mid-Training-85M/temp/parquet_files')
-    dst_dir = get_init_file()[-1]
+    # data_root = Path(cfg['hf_data'])
+    # dst_dir = get_init_file()[-1]
+    data_root = Path('/nas_train/app.e0016372/datasets/OmniScience/data')
+    dst_dir = Path('/nas_train/app.e0016372/datasets/OmniScience/images')
+    shutil.rmtree(dst_dir, ignore_errors=True)
+    dst_dir.mkdir(parents=True, exist_ok=True)
 
     parquet_files = sorted(data_root.glob('**/*.parquet'))
     workers = min(len(parquet_files), os.cpu_count())
