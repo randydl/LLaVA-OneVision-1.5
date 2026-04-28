@@ -50,9 +50,21 @@ def _conv2d_to_linear(weight: torch.Tensor) -> torch.Tensor:
     return weight
 
 
-def _linear_to_conv2d(weight: torch.Tensor, in_channels: int = 3, patch_size: int = 14) -> torch.Tensor:
-    """Reshape Linear weight [O, C*H*W] -> Conv2d weight [O, C, H, W]."""
+def _linear_to_conv2d(weight: torch.Tensor, in_channels: int = 3, patch_size: int | None = None) -> torch.Tensor:
+    """Reshape Linear weight [O, C*H*W] -> Conv2d weight [O, C, H, W].
+
+    If ``patch_size`` is None, infer it from the flattened input dim assuming
+    a square patch: H = W = sqrt(C*H*W / in_channels).
+    """
     if weight.dim() == 2:
+        if patch_size is None:
+            flat = weight.shape[1]
+            assert flat % in_channels == 0, f"flat dim {flat} not divisible by in_channels {in_channels}"
+            spatial = flat // in_channels
+            patch_size = int(round(spatial ** 0.5))
+            assert patch_size * patch_size == spatial, (
+                f"cannot infer square patch_size from flat dim {flat} / in_channels {in_channels}"
+            )
         return weight.reshape(weight.shape[0], in_channels, patch_size, patch_size)
     return weight
 
@@ -70,14 +82,95 @@ def _gather_along_dim0(shards: list) -> torch.Tensor:
     return torch.cat(shards, dim=0)
 
 
+def _shards_are_replicated(shards: list) -> bool:
+    """Detect whether a list of per-TP-rank tensors are identical replicas.
+
+    The patch embedding has two valid mcore layouts:
+      1. ``ParallelPatchEmbed`` (``PATCH_EMBED_TYPE=TP_LINEAR``):
+         Each TP rank stores a distinct shard of shape
+         ``[embed_dim/tp, C, H, W]`` (or 2-D ``[embed_dim/tp, C*H*W]``).
+         These shards must be concatenated along dim 0.
+      2. ``PatchEmbed`` (``CONV2D``) or ``TorchLinearPatchEmbed`` (``LINEAR``):
+         Each TP rank stores the *full* replicated weight of shape
+         ``[embed_dim, C, H, W]`` (or 2-D ``[embed_dim, C*H*W]``).
+         These must NOT be concatenated; we just take rank 0.
+
+    We detect (2) by checking that all shards have the same shape AND
+    bitwise-equal contents (replicas saved by every TP rank).
+    """
+    if len(shards) <= 1:
+        return False
+    ref = shards[0]
+    for s in shards[1:]:
+        if s.shape != ref.shape:
+            return False
+        if not torch.equal(s, ref):
+            return False
+    return True
+
+
+def _merge_patch_shards(shards: list) -> torch.Tensor:
+    """Merge per-TP-rank patch_embed shards into one full weight.
+
+    Auto-detects replicated (CONV2D / LINEAR patch_embed) vs TP-sharded
+    (TP_LINEAR / ParallelPatchEmbed) layouts.
+    """
+    if len(shards) == 1:
+        return shards[0]
+    if _shards_are_replicated(shards):
+        print(
+            f" > patch_embed shards are REPLICATED across TP={len(shards)} "
+            f"(shape {list(shards[0].shape)}); using rank 0 copy"
+        )
+        return shards[0]
+    print(
+        f" > patch_embed shards are TP-SHARDED across TP={len(shards)} "
+        f"(per-rank shape {list(shards[0].shape)}); concatenating along dim 0"
+    )
+    return _gather_along_dim0(shards)
+
+
 def _get_non_ep_model_source(state_dict):
+    """Return model dict from PP rank 0, TP rank 0.
+
+    `load_megatron_checkpoint` returns either:
+      - 1D layout (TP only):  state_dict[tp]            -> dict with "model"
+      - 2D layout (TP+PP):    state_dict[pp][tp]        -> dict with "model"
+    The vision patch embedding always lives on PP rank 0, so we take [0][0].
+    """
     first = state_dict[0]
     if isinstance(first, dict):
+        # 1D layout: state_dict[tp_rank] is a ckpt dict -> tp=0
         return first["model"]
     first_rank = first[0]
     if isinstance(first_rank, dict):
+        # 2D layout: state_dict[pp_rank][tp_rank] -> pp=0, tp=0
         return first_rank["model"]
     raise TypeError("Unsupported non-EP checkpoint structure")
+
+
+def _get_non_ep_tp_shard(state_dict, tp_rank):
+    """Return model dict at PP rank 0 for a specific TP rank.
+
+    Handles both 1D layout (state_dict[tp]) and 2D layout (state_dict[pp][tp]).
+    Patch embedding always resides on PP rank 0.
+    """
+    first = state_dict[0]
+    if isinstance(first, dict):
+        # 1D layout (PP=1): state_dict is indexed directly by tp_rank
+        return state_dict[tp_rank]["model"]
+    # 2D layout (PP>1): state_dict[pp][tp]; patch_embed is on pp=0
+    return state_dict[0][tp_rank]["model"]
+
+
+def _get_non_ep_tp_size(state_dict):
+    """Return the TP size of a non-EP state_dict (1D or 2D layout)."""
+    first = state_dict[0]
+    if isinstance(first, dict):
+        # 1D: outer dim IS tp
+        return len(state_dict)
+    # 2D: state_dict[pp][tp], TP size = len(state_dict[0])
+    return len(first)
 
 
 if (args.load_platform, args.save_platform) == ("mcore", "huggingface"):
@@ -97,28 +190,22 @@ if (args.load_platform, args.save_platform) == ("mcore", "huggingface"):
 
     for k1, k2 in name_map.items():
         if k1 == PATCH_WEIGHT_KEY_MCORE:
-            # Gather TP shards and convert Linear 2-D back to Conv2d 4-D for HF.
+            # Gather TP shards (or detect replicas) and convert Linear 2-D back to Conv2d 4-D for HF.
             if tp > 1:
-                # state_dict is a list of tp_rank dicts (or nested).
-                # Collect patch weight from each TP rank.
                 shards = []
                 if args.expert_parallel_size is not None:
                     for tp_rank in range(tp):
                         shards.append(state_dict[tp_rank][0][0]["model"][k1])
                 else:
                     for tp_rank in range(tp):
-                        first = state_dict[tp_rank]
-                        if isinstance(first, dict):
-                            shards.append(first["model"][k1])
-                        else:
-                            shards.append(first[0]["model"][k1])
-                full_weight = _gather_along_dim0(shards)
+                        shards.append(_get_non_ep_tp_shard(state_dict, tp_rank)[k1])
+                full_weight = _merge_patch_shards(shards)
             else:
                 full_weight = source[k1]
 
             # Convert from Linear 2-D to Conv2d 4-D
             target[k2] = _linear_to_conv2d(full_weight)
-            print(f" > {k1} -> {k2}  (gathered TP shards, reshaped to Conv2d {list(target[k2].shape)})")
+            print(f" > {k1} -> {k2}  (merged TP shards, reshaped to Conv2d {list(target[k2].shape)})")
         else:
             target[k2] = source[k1]
     save_huggingface_checkpoint(target, args.save_ckpt_path)
@@ -147,6 +234,8 @@ elif (args.load_platform, args.save_platform) == ("huggingface", "mcore"):
                 target[k1] = source[k2]
                 if tp_rank == 0:
                     print(f" > {k1}")
+        # TE 2.2 BasicOperation.set_extra_state expects a torch.Tensor (calls .numel()).
+        target["vision_model.pre_layernorm._extra_state"] = torch.tensor([])
         state_dict.append({"model": target})
     save_megatron_checkpoint(state_dict, os.path.join(args.save_ckpt_path, "release"))
 
@@ -165,9 +254,10 @@ elif (args.load_platform, args.save_platform) == ("mcore", "mcore"):
 
     # First, gather the full patch weight from the source (may be sharded).
     if PATCH_WEIGHT_KEY_MCORE in source:
-        # Detect if the source is already sharded by checking shape mismatch
-        # with what we'd expect for full weight.
-        source_tp = len(state_dict)
+        if args.expert_parallel_size is not None:
+            source_tp = len(state_dict)
+        else:
+            source_tp = _get_non_ep_tp_size(state_dict)
         if source_tp > 1:
             shards = []
             if args.expert_parallel_size is not None:
@@ -175,12 +265,8 @@ elif (args.load_platform, args.save_platform) == ("mcore", "mcore"):
                     shards.append(state_dict[tp_rank][0][0]["model"][PATCH_WEIGHT_KEY_MCORE])
             else:
                 for tp_rank in range(source_tp):
-                    first = state_dict[tp_rank]
-                    if isinstance(first, dict):
-                        shards.append(first["model"][PATCH_WEIGHT_KEY_MCORE])
-                    else:
-                        shards.append(first[0]["model"][PATCH_WEIGHT_KEY_MCORE])
-            full_patch_weight = _gather_along_dim0(shards)
+                    shards.append(_get_non_ep_tp_shard(state_dict, tp_rank)[PATCH_WEIGHT_KEY_MCORE])
+            full_patch_weight = _merge_patch_shards(shards)
         else:
             full_patch_weight = source[PATCH_WEIGHT_KEY_MCORE]
         # Handle old Conv2d format

@@ -145,6 +145,31 @@ def llava_onevision2_4b():
 
 
 @register_model_config(
+    model_family=VisionLanguageModelFamilies.LLAVA_ONEVISION2, model_arch="llava-onevision2-4b-p16m3"
+)
+def llava_onevision2_4b_p16m3():
+    """llava-onevision2-4b with patch_size=16 and spatial_merge_size=3 (rope 3x3 layout).
+
+    LLM portion is identical to llava-onevision2-4b; only the ViT differs
+    (configured separately in get_vision_config via the 'p16m3' suffix).
+    """
+    return LlavaOnevision2Config(
+        num_layers=36,
+        hidden_size=2560,
+        ffn_hidden_size=9728,
+        num_attention_heads=32,
+        group_query_attention=True,
+        num_query_groups=8,
+        vocab_size_in_config_file=151936,
+        make_vocab_size_divisible_by=128,
+        qk_layernorm=True,
+        kv_channels=128,
+        add_qkv_bias=False,
+        rotary_base=5000000,
+    )
+
+
+@register_model_config(
     model_family=VisionLanguageModelFamilies.LLAVA_ONEVISION2, model_arch="llava-onevision2-30b-a3b"
 )
 def llava_onevision2_30b_a3b():
@@ -254,6 +279,7 @@ class VisionConfig:
     add_qkv_bias: bool = False
     position_embedding_type: str = "none"
     frame_windows_size: int = 4
+    spatial_merge_size: int = 2
 
 
 def get_vision_config(model_family, model_name):
@@ -289,6 +315,10 @@ def get_vision_config(model_family, model_name):
         config.kv_channels = 104
     elif "llava-onevision2-layer1" == model_name:
         config.num_layers = 1
+    if "p16m3" in model_name:
+        config.patch_size = 16
+        config.image_size = (384, 384)
+        config.spatial_merge_size = 3
     return config
 
 

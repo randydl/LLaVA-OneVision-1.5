@@ -1134,12 +1134,22 @@ class OneVisionEncoderModel(VisionModule):
             # Use forward_from_positions method
             rotary_pos_emb = self.video_rope.forward_from_positions(patch_positions)
 
-            # Compute tokens_per_sample from grid_thw for cu_seqlens
+            # Convert from row-major to block layout (matching HF behavior)
+            # When patch_positions are in row-major order (e.g. from tests),
+            # we need the same block-layout conversion as the grid_thw path.
+            offset = 0
+            all_rotary_pos_emb = []
             tokens_per_sample = []
             for i in range(batch_size):
                 t, h, w = grid_thw[i]
                 t, h, w = t.item(), h.item(), w.item()
-                tokens_per_sample.append(t * h * w)
+                num_patches = t * h * w
+                tokens_per_sample.append(num_patches)
+                sample_freqs = rotary_pos_emb[offset : offset + num_patches]
+                sample_freqs = convert_rope_to_block_layout(sample_freqs, t, h, w, sms)
+                all_rotary_pos_emb.append(sample_freqs)
+                offset += num_patches
+            rotary_pos_emb = torch.cat(all_rotary_pos_emb, dim=0)
 
         output["rotary_pos_emb"] = rotary_pos_emb.clone()
 

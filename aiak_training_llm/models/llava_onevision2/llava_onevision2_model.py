@@ -92,9 +92,11 @@ class LlavaOnevision2(MegatronModule):
 
         #  define the vision model and the projection from vision model outputs to language model inputs.
         if self.add_encoder:
+            spatial_merge_size = getattr(vision_config, "spatial_merge_size", 2)
             self.vision_model = OneVisionEncoderModel(
                 vision_config,
                 vision_layer_spec,
+                spatial_merge_size=spatial_merge_size,
             )
 
             self.adapter = Adapter(
@@ -102,6 +104,7 @@ class LlavaOnevision2(MegatronModule):
                 adapter_layer_spec,
                 input_size=vision_config.hidden_size,  # input size to the adapter.
                 output_size=language_config.hidden_size,  # output size of the adapter.
+                spatial_merge_size=spatial_merge_size,
             )
             # This allows ignoring missing weights for the vision projection during checkpoint loading.
             # This should be disabled by default but can be enabled if your checkpoint contains pretrained

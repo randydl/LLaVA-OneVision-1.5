@@ -259,11 +259,13 @@ class Qwen2VLTaskEncoder(TaskEncoder):
             Modified messages list (same objects, content strings updated in-place).
         """
         # Compute per-frame merged token counts from block-layout patch positions.
-        # After block layout, every 4 consecutive patches = 1 merged token,
+        # After block layout, every (sms*sms) consecutive patches = 1 merged token,
         # and patches with the same t are contiguous.
+        sms = getattr(self.processor.image_processor, "merge_size", 2)
+        merge_unit = sms * sms
         flat_positions = torch.cat(patch_positions, dim=0)
-        num_merged_tokens = len(flat_positions) // 4
-        token_t_values = flat_positions[::4, 0].tolist()
+        num_merged_tokens = len(flat_positions) // merge_unit
+        token_t_values = flat_positions[::merge_unit, 0].tolist()
 
         frame_token_counts = []
         idx = 0
@@ -368,7 +370,8 @@ class Qwen2VLTaskEncoder(TaskEncoder):
                     img_patch_positions = torch.stack([t_coords, h_coords, w_coords], dim=1)
                     # Apply block layout conversion to match pixel_values arrangement
                     img_patch_positions = convert_positions_to_block_layout(
-                        img_patch_positions, t_val, h_val, w_val, spatial_merge_size=2
+                        img_patch_positions, t_val, h_val, w_val,
+                        spatial_merge_size=getattr(self.processor.image_processor, "merge_size", 2),
                     )
                     patch_positions.append(img_patch_positions)
             else:
@@ -376,7 +379,10 @@ class Qwen2VLTaskEncoder(TaskEncoder):
                 # Apply block layout conversion for temporal contiguity after spatial merge
                 flat_positions = torch.cat(patch_positions, dim=0)
                 t_v, h_v, w_v = int(image_grid_thw[0][0]), int(image_grid_thw[0][1]), int(image_grid_thw[0][2])
-                flat_positions = convert_positions_to_block_layout(flat_positions, t_v, h_v, w_v, spatial_merge_size=2)
+                flat_positions = convert_positions_to_block_layout(
+                    flat_positions, t_v, h_v, w_v,
+                    spatial_merge_size=getattr(self.processor.image_processor, "merge_size", 2),
+                )
                 patch_positions = [flat_positions]
             patch_positions_sum = sum(len(p) for p in patch_positions)
             assert num_patches == patch_positions_sum, (
