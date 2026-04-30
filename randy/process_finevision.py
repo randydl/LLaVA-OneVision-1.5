@@ -11,12 +11,12 @@ from multiprocessing import Pool, cpu_count
 
 
 DATA_ROOT = Path(
-    '/nas_train/app.e0031982/datasets/mvp-lab/LLaVA-OneVision-1.5-Instruct-Data'
-    # '/nas_train/app.e0031982/datasets/FineVision'
+    # '/nas_train/app.e0031982/datasets/mvp-lab/LLaVA-OneVision-1.5-Instruct-Data'
+    '/nas_train/app.e0031982/datasets/FineVision'
 )
 OUTPUT_ROOT = Path(
-    '/nas_user/app.e0016372/datasets/LLaVA-OneVision-1.5-Instruct-Data'
-    # '/nas_user/app.e0016372/datasets/FineVision'
+    # '/nas_user/app.e0016372/datasets/LLaVA-OneVision-1.5-Instruct-Data'
+    '/nas_user/app.e0016372/datasets/FineVision'
 )
 
 ERROR_LOG = OUTPUT_ROOT / 'error.log'
@@ -121,8 +121,8 @@ def process_parquet(parquet_path):
     output_file = jsonl_dir / f'{parquet_path.stem}.jsonl'
 
     try:
-        # df = pd.read_parquet(parquet_path, columns=['texts', 'images'])
-        df = pd.read_parquet(parquet_path, columns=['conversations', 'image'])
+        df = pd.read_parquet(parquet_path, columns=['texts', 'images'])
+        # df = pd.read_parquet(parquet_path, columns=['conversations', 'image'])
         df.columns = ['messages', 'images']
 
         with jsonlines.open(output_file, mode='w') as writer:
