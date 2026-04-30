@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="asset/llava_onevision_black.png">
-    <source media="(prefers-color-scheme: light)" srcset="asset/llava_onevision_white.png">
-    <img alt="LLaVA-OneVision-1.5" src="output/llava_onevision_white.png" width="600" style="max-width: 100%;">
+    <source media="(prefers-color-scheme: dark)" srcset="asset/llava_onevision_2_black.svg">
+    <source media="(prefers-color-scheme: light)" srcset="asset/llava_onevision_2_white.svg">
+    <img alt="LLaVA-OneVision-2.0" src="asset/llava_onevision_2_white.svg" width="820" style="max-width: 100%;">
   </picture>
 </p>
 
@@ -73,449 +73,97 @@
 
 
 ## NEWS
-- 2025-12-11: Released [RL recipe for LLaVA-OneVision-1.5](https://mvp-ai-lab.github.io/LLaVA-OneVision-1.5-RL/) with [code](https://github.com/EvolvingLMMs-Lab/LLaVA-OneVision-1.5-RL), [data](https://huggingface.co/datasets/mvp-lab/LLaVA-OneVision-1.5-RL-Data), and [model](https://huggingface.co/mvp-lab/LLaVA-OneVision-1.5-8B-RL).
-- 2025-09-30: Released the [Offline Data Packing Guide](examples_offline_packing).
+- 2026-04-30: Released LLaVA-OneVision-2.0 — next-generation multimodal model, with new [LLaVA-OneVision-2.0-VideoCaption](#datasets) and [LLaVA-OneVision-2.0-Spatial](#datasets) datasets.
+- 2026-02-10: Released [OneVision-Encoder](https://huggingface.co/collections/lmms-lab-encoder/onevision-encoder-6978aeb2bbe1aa13fad12d4c) — codec-aligned vision encoders, with [Technical Report](https://arxiv.org/abs/2602.08683).
+- 2025-12-11: Released RL recipe for LLaVA-OneVision-1.5, with [Project](https://mvp-ai-lab.github.io/LLaVA-OneVision-1.5-RL/), [Code](https://github.com/EvolvingLMMs-Lab/LLaVA-OneVision-1.5-RL), [Data](https://huggingface.co/datasets/mvp-lab/LLaVA-OneVision-1.5-RL-Data), and [Model](https://huggingface.co/mvp-lab/LLaVA-OneVision-1.5-8B-RL).
 - 2025-09-30: Released the LLaVA-OneVision-1.5 [Technical Report](https://arxiv.org/abs/2509.23661).
 
 
 ## Contents
-<!-- TOC (no expansion for Quick Start Guide / Fully Reproducing Guide) -->
+<!-- TOC -->
 - [Introduction](#introduction)
+- [Method](#method)
 - [Models](#models)
 - [Datasets](#datasets)
 - [Results](#evaluation-results)
-- [Quick Start with Hugging Face](#quick-start-with-huggingface)
-- [Evaluation](#evaluation)
-- [Quick Start For Training](#quick-start-guide)
-- [Unbalanced Pipeline Splitting](#unbalanced-pipeline-splitting-不均衡流水线切分)
-- [Fully Reproducing Guide](#fully-reproducing-guide)
 - [Citation](#citation)
 - [Acknowledgement](#acknowledgement)
 
 
-<!-- ## Introduction
-**LLaVA-OneVision-1.5** introduces a family of fully open-source large multimodal models (LMMs) that operate on **native-resolution images**, achieve **state-of-the-art** performance, and require comparatively **lower training costs**.
+## Introduction
 
-#### **Superior Performance**
-  - The model leads on multiple multimodal benchmarks and generally surpasses Qwen2.5-VL.
-  - Training on native-resolution images significantly improves its visual understanding.
+**LLaVA-OneVision-2.0** is the next-generation release of the LLaVA-OneVision family — a fully open 8B multimodal model that unifies image, long-form video, and spatial understanding under a single architecture, with the entire pipeline (data, encoders, training, checkpoints, logs) released end-to-end.
 
-#### **High-Quality Data at Scale**
-  - The pretraining corpus comprises large-scale, concept-balanced, diverse, and high-quality captions curated with strict filtering and quality control.
-  - The instruction-tuning dataset is comprehensive and covers a wide range of tasks.
+### 🎬 Codec-Aligned Vision Encoders
 
-#### **Ultra-Efficient Training Framework**
-  - The end-to-end training cost is about $16,000 on A100 GPUs at roughly $0.60 per GPU-hour.
-  - The system is built on Megatron-LM with support for MoE, FP8, and long-sequence parallelism, and the codebase is optimized for cost-effective scaling.
+Forget uniform patchification. **OneVision-Encoder** and **OneVision-Encoder-Lang** are HEVC-style vision transformers that treat video like a codec stream — selecting only motion- and residual-rich patches and sampling dense frames sparsely instead of sparse frames densely. The result is dramatically longer temporal coverage under the same token budget, where prior ViT backbones simply run out of context.
 
-#### **Fully Open Framework**
-  - The project releases high-quality pretraining and SFT datasets along with the complete training framework, configurations, and recipes.
-  - It also provides detailed training logs and metrics to enable reproducibility and community adoption.
+### 🧊 One Model, Every Modality
+
+Most open multimodal models still live in a 2D, single-image world. **LLaVA-OneVision-2.0-8B-Instruct** breaks out of it — one model, native resolution, no task-specific adapters, no hidden tricks.
+
+- **Long video** — multi-frame reasoning with efficient codec-aligned inference
+- **3D-aware spatial reasoning** — depth, layout, object relations
+- **Documents, OCR, charts** — structured visual inputs at native resolution
+
+New open-source SOTA across a broad suite of multimodal benchmarks.
+
+### 🚀 Fully Open, Reproducible from Day One
+
+Four datasets ship with the LLaVA-OneVision family — two new for 2.0, two carried forward from 1.5:
+
+- **LLaVA-OneVision-2.0-VideoCaption** — extremely dense video captions
+- **LLaVA-OneVision-2.0-Spatial** — 3D-aware spatial reasoning
+- **LLaVA-OneVision-1.5-Mid-Training-85M** — 85M concept-balanced mid-training corpus
+- **LLaVA-OneVision-1.5-Instruct** — full instruction-tuning mixture
+
+And unlike most "open" releases, *everything* ships alongside them: encoder weights, training code, configs, and full training logs. Reproducible end to end.
+
+
+## Method
+
+### Codec-Style Patch Selection
+
+<p align="center">
+  <img src="asset/method_codec_selection.svg" alt="Codec-Style Patch Selection: same 54-token budget, 3× more temporal range than uniform sampling" width="100%">
+</p>
+
+Standard video pipelines uniformly sample a handful of frames and process **every** patch — most of it static background. We borrow from HEVC: keep **I-frames** dense, keep only **motion- and residual-rich patches** from **P-frames**. Same 54-token budget, **18 frames** instead of 6 — 3× the temporal range, no extra LLM context, no input-type adapters.
+
+### One Encoder, Every Modality
+
+<p align="center">
+  <img src="asset/method_unified_encoder.svg" alt="One Encoder, Every Modality: image, video, and multi-image inputs all flow into the same OneVision-Encoder and emerge as a single token stream" width="100%">
+</p>
+
+Most multimodal stacks ship a different tokenizer per input type — one path for images, another for video, a third for multi-image. We don't. **Image, video, and multi-image inputs are all patchified and fed into the same OneVision-Encoder**, then emitted as a single unified token stream to the LLM. No task-specific adapters, no per-modality branching, no hidden routing.
 
 
 ## Models
 
-| Model                    | HF Link                                                                                      | Training Log |
-|--------------------------|--------------------------------------------------------------------------------------------------------|-------------|
-| LLaVA-OneVision-1.5-4B-Instruct | [🤗 HF / 4B-Instruct](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-4B-Instruct)                | [📈 TensorBoard](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-4B-Instruct/tensorboard) |
-| LLaVA-OneVision-1.5-8B-Instruct | [🤗 HF / 8B-Instruct](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-8B-Instruct)                | [📈 TensorBoard](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-8B-Instruct/tensorboard) |
-| LLaVA-OneVision-1.5-4B-Base     | [🤗 HF / 4B-Base](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-4B-Base)                        | [📈 TensorBoard](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-4B-Instruct/tensorboard) |
-| LLaVA-OneVision-1.5-8B-Base     | [🤗 HF / 8B-Base](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-8B-Base)                        | [📈 TensorBoard](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-8B-Instruct/tensorboard) |
+| Model                           | HF Link                                                                                               | Training Log                                                                                 |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| LLaVA-OneVision-2.0-8B-Instruct | —                                                                                                     | —                                                                                            |
+| LLaVA-OneVision-2.0-4B-Instruct | —                                                                                                     | —                                                                                            |
+| LLaVA-OneVision-1.5-4B-Instruct | [🤗 HF / 4B-Instruct](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-4B-Instruct)                 | [📈 TensorBoard](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-4B-Instruct/tensorboard) |
+| LLaVA-OneVision-1.5-8B-Instruct | [🤗 HF / 8B-Instruct](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-8B-Instruct)                 | [📈 TensorBoard](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-8B-Instruct/tensorboard) |
+| OneVision-Encoder               | [🤗 HF / OneVision-Encoder](https://huggingface.co/lmms-lab-encoder/onevision-encoder-large)           | —                                                                                            |
+| OneVision-Encoder-Lang          | [🤗 HF / OneVision-Encoder-Lang](https://huggingface.co/lmms-lab-encoder/onevision-encoder-large-lang) | —                                                                                            |
+
 ## Datasets
 
-![Dataset Visualization](asset/dataset.jpg)
-<p align="left">
-  <strong>(a)</strong> The vocabulary coverage proportion in the LLaVA-OneVision-1.5 Mid-Training dataset before and after concept balancing.
-  <strong>(b)</strong> Distribution of data sources within the LLaVA-OneVision-1.5 Mid-Training dataset.
-  <strong>(c)</strong> Distribution of data sources within the LLaVA-OneVision-1.5 Instruct dataset.
-</p>
-
-| Description        | Link                                                                                                   | Status      |
-|--------------------|--------------------------------------------------------------------------------------------------------|-------------|
-| LLaVA-OneVision-1.5-Mid-Training-85M   | [🤗HF / Mid-Training 85M](https://huggingface.co/datasets/mvp-lab/LLaVA-OneVision-1.5-Mid-Training-85M) | Available  |
-| LLaVA-OneVision-1.5-Instruct           | [🤗HF / Instruct-Data](https://huggingface.co/datasets/mvp-lab/LLaVA-OneVision-1.5-Instruct-Data)        | Available  |
+| Description                          | Link                                                                                                   | Status    |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------ | --------- |
+| LLaVA-OneVision-2.0-VideoCaption     | —                                                                                                      | Available |
+| LLaVA-OneVision-2.0-Spatial          | —                                                                                                      | Available |
+| LLaVA-OneVision-1.5-Mid-Training-85M | [🤗HF / Mid-Training 85M](https://huggingface.co/datasets/mvp-lab/LLaVA-OneVision-1.5-Mid-Training-85M) | Available |
+| LLaVA-OneVision-1.5-Instruct         | [🤗HF / Instruct-Data](https://huggingface.co/datasets/mvp-lab/LLaVA-OneVision-1.5-Instruct-Data)       | Available |
 
 
 ## Evaluation Results
 
 
 All evaluations were conducted using [lmms_eval](https://github.com/EvolvingLMMs-Lab/lmms-eval).
-
-![](asset/performance.png)
-
-
-## Quick Start with HuggingFace
-
-```python
-from transformers import AutoTokenizer, AutoProcessor, AutoModelForCausalLM
-from qwen_vl_utils import process_vision_info
-model_path = "lmms-lab/LLaVA-OneVision-1.5-8B-Instruct"
-
-# default: Load the model on the available device(s)
-model = AutoModelForCausalLM.from_pretrained(
-    model_path, torch_dtype="auto", device_map="auto", trust_remote_code=True
-)
-
-# default processor
-processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-
-messages = [
-    {
-        "role": "user",
-        "content": [
-            {
-                "type": "image",
-                "image": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg",
-            },
-            {"type": "text", "text": "Describe this image."},
-        ],
-    }
-]
-
-# Preparation for inference
-text = processor.apply_chat_template(
-    messages, tokenize=False, add_generation_prompt=True
-)
-image_inputs, video_inputs = process_vision_info(messages)
-inputs = processor(
-    text=[text],
-    images=image_inputs,
-    videos=video_inputs,
-    padding=True,
-    return_tensors="pt",
-)
-inputs = inputs.to("cuda")
-
-# Inference: Generation of the output
-generated_ids = model.generate(**inputs, max_new_tokens=1024)
-generated_ids_trimmed = [
-    out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-]
-output_text = processor.batch_decode(
-    generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-)
-print(output_text)
-
-``` -->
-
-## Evaluation
-```
-# pip install git+https://github.com/EvolvingLMMs-Lab/lmms-eval.git  
-
-accelerate launch --num_processes=8 --main_process_port 12399 -m lmms_eval \
-    --model=llava_onevision1_5 \
-    --model_args=pretrained=lmms-lab/LLaVA-OneVision-1.5-8B-Instruct,attn_implementation=flash_attention_2,max_pixels=3240000 \
-    --tasks=mmmu_val,mmmu_pro_standard,mmbench_en_test,mmerealworld,mmerealworld_cn,ai2d,ai2d_no_mask,vstar_bench,chartqa,charxiv,docvqa_test,mathvista_testmini,mmstar,scienceqa \
-    --batch_size=1
-```
-
-
-## Quick Start Guide
-
-### 1.🐳 Docker (Recommended)
-
-We strongly recommend using the docker environment for a seamless experience. The following instructions are tailored for the A100 80GB GPU environment.
-
-
-```bash
-# Clone repository
-git clone https://github.com/anxiangsir/LLaVA-OneVision-2.git
-cd LLaVA-OneVision-2
-
-docker build -t llava_megatron:25.12 .
-
-# Run container with -w to set working directory directly to the mounted volume
-docker run -it --gpus all \
-    --ipc host --net host --privileged --cap-add IPC_LOCK \
-    --ulimit memlock=-1 --ulimit stack=67108864 --rm \
-    -v $(pwd):/workspace/LLaVA-OneVision-2 \
-    -w /workspace/LLaVA-OneVision-2 \
-    --name "llava_megatron_container" \
-    llava_megatron:25.12 /bin/bash
-```
-
-### 2. Checkpoint and Format Conversion
-
-You have two options to get started with LLaVA-OneVision-1.5-stage-0:
-
-<!-- #### Option 1: Download pre-trained model from Hugging Face
-Download our `LLaVA-OneVision-1.5-4B-stage0` model directly from [Hugging Face](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-4B-stage0). -->
-
-#### Option 2: Merge initial weights yourself
-Alternatively, you can merge the initial weights from the original ViT and LLM:
-```bash
-python transformers_impl/merge_model.py \
---vit_path DeepGlint-AI/rice-vit-large-patch14-560 \
---llm_path Qwen/Qwen3-4B-Instruct-2507 \
---output LLaVA-OneVision-1.5-4B-stage0
-```
-Note: When merging weights, the adapter component will be initialized with default values.
-
-Convert the model from Hugging Face format to Megatron format:
-
-```bash
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 bash examples/llava_onevision1_5/convert/convert_4b_hf_to_mcore.sh \
-LLaVA-OneVision-1.5-4B-stage0 \
-LLaVA-OneVision-1.5-4B-stage0_mcore_tp1_pp1 \
-1 1
-```
-
-### 3. Stage 1 Alignment-Training
-
-Download LLaVA from [LLaVA-558K-Webdataset](https://huggingface.co/datasets/lmms-lab/LLaVA-558K-Webdataset).
-
-
-```bash
-# ============================================================
-# Required environment variables:
-#   AIAK_TRAINING_PATH  Root directory of the AIAK-Training-LLM project
-#   DATA_PATH           Directory with WebDataset shards (.tar) for pretraining
-#   TOKENIZER_PATH      Hugging Face tokenizer directory
-#   CHECKPOINT_PATH     Megatron-formatted checkpoint directory (e.g., mcore TP1/PP1)
-#   SAVE_CKPT_PATH      Output directory for saving training checkpoints
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
-DATA_PATH=LLaVA-558K-Webdataset \
-TOKENIZER_PATH=LLaVA-OneVision-1.5-4B-stage0 \
-CHECKPOINT_PATH=LLaVA-OneVision-1.5-4B-stage0_mcore_tp1_pp1 \
-bash examples/llava_onevision1_5/quick_start/stage_1_alignment_llava_ov_4b.sh
-```
-
-### 4. Stage 1.5 Mid-Training 
-
-Download our lightweight packed subset from [LLaVA-OneVision-1.5-Mid-Training-Quick-Start-3M-Webdataset](https://huggingface.co/datasets/lmms-lab/LLaVA-OneVision-1.5-Mid-Training-Webdataset-Quick-Start-3M).
-
-```bash
-# ============================================================
-# Convert model to release format
-bash examples/llava_onevision1_5/convert/convert_4b_mcore_to_release.sh \
-stage_1_alignment_llava_ov_4b/iter_0002500/ \
-stage_1_alignment_llava_ov_4b_release 1 1
-# ============================================================
-# Launch
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
-DATA_PATH=LLaVA-OneVision-1.5-Mid-Training-Webdataset-Quick-Start-3M \
-TOKENIZER_PATH=LLaVA-OneVision-1.5-4B-stage0 \
-CHECKPOINT_PATH=stage_1_alignment_llava_ov_4b_release \
-bash examples/llava_onevision1_5/quick_start/stage_1.5_mid_training_llava_ov_4b.sh
-```
-
-
-### 5. Stage 2 Instruct-Training
-
-Download LLaVA-NeXT-780k-webdataset at [LLaVA-NeXT-780K Dataset](https://huggingface.co/datasets/lmms-lab/LLaVA-NeXT-780k-webdataset).
-
-```bash
-# ============================================================
-# Convert model to release format
-bash examples/llava_onevision1_5/convert/convert_4b_mcore_to_release.sh \
-stage_1.5_mid_training_llava_ov_4b/iter_0020000/ \
-stage_1.5_mid_training_llava_ov_4b_release 1 1
-# ============================================================
-# # Launch
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
-DATA_PATH=LLaVA-NeXT-780k-Webdataset \
-TOKENIZER_PATH=LLaVA-OneVision-1.5-4B-stage0 \
-CHECKPOINT_PATH=stage_1.5_mid_training_llava_ov_4b_release \
-bash examples/llava_onevision1_5/quick_start/stage_2_instruct_llava_ov_4b.sh
-```
-
-
-### 6. Convert mcore to Hugging Face
-```bash
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
-bash examples/llava_onevision1_5/convert/convert_4b_mcore_to_hf.sh \
-stage_2_instruct_llava_ov_4b/iter_0003500 \
-LLaVA-OneVision-1.5-4B-3M-Mid-Training-780K-Instruct \
-1 1
-# Copy non-model files (e.g., tokenizer config) to the new directory
-find LLaVA-OneVision-1.5-4B-stage0/ -type f -not -iname '*safetensors*' -exec cp {}  LLaVA-OneVision-1.5-4B-3M-Mid-Training-780K-Instruct/ ';'
-```
-
-### 7. Evaluation
-```bash
-# pip install git+https://github.com/EvolvingLMMs-Lab/lmms-eval.git
-CUDA_VISIBLE_DEVICES=4,5,6,7 accelerate launch \
---num_processes=4 --main_process_port 12399 -m lmms_eval --model=llava_onevision1_5 --batch_size=1 --tasks=mme \
---model_args=pretrained=/workspace/LLaVA-OneVision-2/LLaVA-OneVision-1.5-4B-3M-Mid-Training-780K-Instruct,max_pixels=3240000
-```
-
-## Unbalanced Pipeline Splitting (不均衡流水线切分)
-
-### Background
-
-LLaVA-OneVision-2 is a multimodal model that consists of three components placed across pipeline stages:
-
-- **Stage 0** – ViT encoder (24 transformer layers, ~300 M parameters) **plus** optionally a few LLM decoder layers
-- **Stage 1 … N-1** – the remaining LLM decoder layers
-
-Because the ViT encoder adds significant computation to stage 0, a naive uniform layer split would make stage 0 much heavier than the others, creating pipeline bubbles and lowering GPU utilisation.
-
-**Custom / unbalanced pipeline splitting** lets you specify exactly how many LLM layers each pipeline stage holds, so you can compensate for the extra ViT load on stage 0 by giving it fewer (or zero) LLM layers.
-
-### Parameters
-
-| Argument | Description |
-|---|---|
-| `--custom-pipeline-layers A,B,...` | Comma-separated LLM decoder layer counts per PP stage. Must have exactly `PP` elements; values must sum to the total number of LLM layers. |
-| `--custom-pipeline-recompute-layers A,B,...` | Comma-separated activation-recompute layer counts per PP stage. Must be used together with `--recompute-granularity full`. Replaces the global `--recompute-num-layers` with per-stage control. **On stage 0 the count covers the ViT transformer layers (24 total); on all other stages it covers the LLM decoder layers on that stage.** |
-
-> **Note on `--custom-pipeline-recompute-layers` stage 0:** Because stage 0 always hosts the ViT encoder (24 layers), the recompute budget for stage 0 applies to those ViT layers. For example, setting `12` for stage 0 means half of the ViT's 24 layers are recomputed. Stages 1+ cover the LLM layers assigned to that stage.
-
-### Recommended Configurations
-
-#### 2B model – 28 LLM layers, 24-layer ViT on stage 0
-
-| PP | `--custom-pipeline-layers` | `--custom-pipeline-recompute-layers` | Layout |
-|----|---------------------------|--------------------------------------|--------|
-| 2  | `12,16`    | `12,8`     | stage 0: ViT + 12 LLM layers; stage 1: 16 LLM layers |
-| 4  | `0,9,9,10` | `12,5,5,5` | stage 0: ViT only; stages 1-3 share the 28 LLM layers |
-
-#### 4B model – 36 LLM layers, 24-layer ViT on stage 0
-
-| PP | `--custom-pipeline-layers` | `--custom-pipeline-recompute-layers` | Layout |
-|----|---------------------------|--------------------------------------|--------|
-| 2  | `12,24`      | `12,12`    | stage 0: ViT + 12 LLM layers; stage 1: 24 LLM layers |
-| 3  | `0,18,18`    | `12,9,9`   | stage 0: ViT only; stages 1-2: 18 LLM layers each |
-| 4  | `0,12,12,12` | `12,6,6,6` | stage 0: ViT only; stages 1-3: 12 LLM layers each |
-
-#### 8B model – 36 LLM layers, 24-layer ViT on stage 0
-
-| PP | `--custom-pipeline-layers` | `--custom-pipeline-recompute-layers` | Layout |
-|----|---------------------------|--------------------------------------|--------|
-| 2  | `12,24`      | `12,12`    | stage 0: ViT + 12 LLM layers; stage 1: 24 LLM layers |
-| 3  | `0,18,18`    | `12,9,9`   | stage 0: ViT only; stages 1-2: 18 LLM layers each |
-| 4  | `0,12,12,12` | `12,6,6,6` | stage 0: ViT only; stages 1-3: 12 LLM layers each |
-
-### Training Script Example (4B, TP=1 PP=2)
-
-The key training arguments for an unbalanced PP=2 run on the 4B model:
-
-```bash
-TRAINING_ARGS=(
-    ...
-    # Unbalanced layer split: stage-0 holds ViT (24 layers) + 12 LLM layers,
-    # stage-1 holds the remaining 24 LLM layers.
-    --custom-pipeline-layers 12,24
-
-    # Per-stage activation recompute budget:
-    #   stage 0 → 12 out of 24 ViT layers  (ViT has 24 layers)
-    #   stage 1 → 12 out of 24 LLM layers
-    --custom-pipeline-recompute-layers 12,12  # ViT 24layers
-
-    --recompute-granularity full
-    --recompute-method uniform
-    ...
-)
-
-MODEL_PARALLEL_ARGS=(
-    --pipeline-model-parallel-size 2   # PP=2
-    --tensor-model-parallel-size  1   # TP=1
-    ...
-)
-```
-
-For PP=3 (stage 0 holds ViT only, stages 1-2 each hold 18 LLM layers):
-
-```bash
-TRAINING_ARGS=(
-    ...
-    --custom-pipeline-layers 0,18,18
-
-    # stage 0 → 12 out of 24 ViT layers  (ViT 24layers)
-    # stage 1 → 9 out of 18 LLM layers
-    # stage 2 → 9 out of 18 LLM layers
-    --custom-pipeline-recompute-layers 12,9,9  # ViT 24layers
-
-    --recompute-granularity full
-    --recompute-method uniform
-    ...
-)
-```
-
-### Checkpoint Conversion with Custom Pipeline Layers
-
-The conversion scripts accept the layer split as a positional argument. You must pass the **same** `CUSTOM_PIPELINE_LAYERS` value that was used (or will be used) during training.
-
-#### HuggingFace → Megatron-Core
-
-```bash
-# 2B  TP=1 PP=2  (custom split 12,16)
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
-bash examples/llava_onevision2/convert/convert_2b_hf_to_mcore.sh \
-    /path/to/hf_checkpoint  /path/to/mcore_tp1_pp2  1 2 12,16
-
-# 2B  TP=1 PP=4  (custom split 0,9,9,10)
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
-bash examples/llava_onevision2/convert/convert_2b_hf_to_mcore.sh \
-    /path/to/hf_checkpoint  /path/to/mcore_tp1_pp4  1 4 0,9,9,10
-
-# 4B  TP=1 PP=2  (custom split 12,24)
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
-bash examples/llava_onevision2/convert/convert_4b_hf_to_mcore.sh \
-    /path/to/hf_checkpoint  /path/to/mcore_tp1_pp2  1 2 12,24
-
-# 4B  TP=1 PP=4  (custom split 0,12,12,12)
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
-bash examples/llava_onevision2/convert/convert_4b_hf_to_mcore.sh \
-    /path/to/hf_checkpoint  /path/to/mcore_tp1_pp4  1 4 0,12,12,12
-
-# 8B  TP=2 PP=4  (custom split 0,12,12,12)
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
-bash examples/llava_onevision2/convert/convert_8b_hf_to_mcore.sh \
-    /path/to/hf_checkpoint  /path/to/mcore_tp2_pp4  2 4 0,12,12,12
-```
-
-#### Megatron-Core → HuggingFace
-
-```bash
-# 2B  TP=1 PP=2  (custom split 12,16)
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
-bash examples/llava_onevision2/convert/convert_2b_mcore_to_hf.sh \
-    /path/to/mcore_tp1_pp2/iter_XXXXXXX  /path/to/hf_output  1 2 12,16
-
-# 4B  TP=1 PP=2  (custom split 12,24)
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
-bash examples/llava_onevision2/convert/convert_4b_mcore_to_hf.sh \
-    /path/to/mcore_tp1_pp2/iter_XXXXXXX  /path/to/hf_output  1 2 12,24
-
-# 4B  TP=1 PP=4  (custom split 0,12,12,12)
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
-bash examples/llava_onevision2/convert/convert_4b_mcore_to_hf.sh \
-    /path/to/mcore_tp1_pp4/iter_XXXXXXX  /path/to/hf_output  1 4 0,12,12,12
-
-# 8B  TP=2 PP=4  (custom split 0,12,12,12)
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
-bash examples/llava_onevision2/convert/convert_8b_mcore_to_hf.sh \
-    /path/to/mcore_tp2_pp4/iter_XXXXXXX  /path/to/hf_output  2 4 0,12,12,12
-```
-
-> [!NOTE]
-> The `CUSTOM_PIPELINE_LAYERS` passed to the conversion script must exactly match the value used when the checkpoint was originally saved. A mismatch will cause incorrect weight loading.
-
-## Fully Reproducing Guide
-
-> [!TIP]
-> More detailed reproduction steps for the complete process will be provided after the dataset upload is completed.
-
-
-### Mid-Training
-
-To improve model training efficiency, we implement offline sample packing:
-
-1. Download the [**Mid-Training-85M Dataset**](https://huggingface.co/datasets/lmms-lab/LLaVA-One-Vision-1.5-Mid-Training-85M)
-2. Pack the data into WebDataset format, refer to [**Examples offlinepacking**](examples_offline_packing) and [**Offline Padding-Free Data Packing**](examples/llava_onevision1_5/sample_packing/README.md)
-
-
-### Instruct
-1. Download the [**LLaVA-OneVision-1.5-Instruct-Data**](https://huggingface.co/datasets/lmms-lab/LLaVA-OneVision-1.5-Instruct-Data)
-2. Convert the data into WebDataset format, refer to [**Conversion for Mixed Instruction Data**](docs/sft_data_preprocessing.md)
-
-## Roadmap
-
-Q4 2025 Key Deliverables:
-
-1. **Ultra-efficient MoE Training**  
-2. **Full Video Input LLM**  
 
 
 ## Contributors
@@ -686,18 +334,25 @@ Thanks so much to all of our amazing contributors!
 If you find *LLaVA-OneVision-1.5* useful in your research, please consider to cite the following related papers:
 
 ```
+@inproceedings{LLaVA-OneVision-2.0,
+  title={LLaVA-OneVision-2.0},
+  author={TODO: fill author list from contributors},
+  booktitle={arXiv},
+  year={2026}
+}
+
 @inproceedings{LLaVA-OneVision-1.5,
   title={LLaVA-OneVision-1.5: Fully Open Framework for Democratized Multimodal Training},
   author={An, Xiang and Xie, Yin and Yang, Kaicheng and Zhang, Wenkang and Zhao, Xiuwei and Cheng, Zheng and Wang, Yirui and Xu, Songcen and Chen, Changrui and Wu, Chunsheng and Tan, Huajie and Li, Chunyuan and Yang, Jing and Yu, Jie and Wang, Xiyao and Qin, Bin and Wang, Yumeng and Yan, Zizhen and Feng, Ziyong and Liu, Ziwei and Li, Bo and Deng, Jiankang},
-  booktitle={arXiv},  
+  booktitle={arXiv},
   year={2025}
  }
 
-@inproceedings{xie2025region,
-  title={Region-based Cluster Discrimination for Visual Representation Learning},
-  author={Xie, Yin and Yang, Kaicheng and An, Xiang and Wu, Kun and Zhao, Yongle and Deng, Weimo and Ran, Zimin and Wang, Yumeng and Feng, Ziyong and Miles, Roy and Elezi, Ismail and Deng, Jiankang},
-  booktitle={ICCV},
-  year={2025}
+@article{tang2026onevisionencoder,
+  title={OneVision-Encoder: Codec-Aligned Sparsity as a Foundational Principle for Multimodal Intelligence},
+  author={Tang, Feilong and An, Xiang and Yan, Yunyao and Xie, Yin and Qin, Bin and Yang, Kaicheng and Shen, Yifei and Zhang, Yuanhan and Li, Chunyuan and Feng, Shikun and Chen, Changrui and Tan, Huajie and Hu, Ming and Zhang, Manyuan and Li, Bo and Feng, Ziyong and Liu, Ziwei and Ge, Zongyuan and Deng, Jiankang},
+  journal={arXiv preprint arXiv:2602.08683},
+  year={2026}
 }
 
 @article{lillava,
@@ -710,7 +365,7 @@ If you find *LLaVA-OneVision-1.5* useful in your research, please consider to ci
 
 ## Acknowledgement
 
-We extend our sincere gratitude to **AIAK team of the** [**Baige AI computing platform**](https://cloud.baidu.com/product/aihc.html) **from Baidu AI Cloud** for providing the exceptional training framework. The outstanding capabilities of AIAK-Training-LLM and AIAK-Megatron have significantly accelerated our training process with remarkable efficiency. These cutting-edge frameworks have been instrumental in achieving our research goals. `To get full AIAK support, you can contact Baidu Cloud.` 
+We extend our sincere gratitude to **AIAK team of the** [**Baige AI computing platform**](https://cloud.baidu.com/product/aihc.html) **from Baidu AI Cloud** for providing the exceptional training framework. The outstanding capabilities of AIAK-Training-LLM and AIAK-Megatron have significantly accelerated our training process with remarkable efficiency. These cutting-edge frameworks have been instrumental in achieving our research goals. `To get full AIAK support, you can contact Baidu Cloud.`
 
 We acknowledge the support of [Synvo AI](https://synvo.ai/) for contributing to the partial data annotation in this work, and also thank the maintainers and contributors of the following open-source projects, whose work greatly inspired and supported our research:
 

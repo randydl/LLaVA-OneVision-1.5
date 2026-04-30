@@ -20,10 +20,10 @@ There are two test systems in this repo:
 
 ### 1. pytest test suite (recommended / 推荐)
 
-- `tests/conftest.py` — session fixtures, HF→mcore conversion, Megatron initialization
-- `tests/test_model_consistency.py` — 6 integration tests
-- `tests/test_consistency_utils.py` — 10 utility functions + 11 unit tests
-- `tests/run_consistency_tests.sh` — shell wrapper with auto-conversion + torchrun
+- `tests/consistency/conftest.py` — session fixtures, HF→mcore conversion, Megatron initialization
+- `tests/consistency/test_model_consistency.py` — 6 integration tests
+- `tests/consistency/test_consistency_utils.py` — 10 utility functions + 11 unit tests
+- `tests/consistency/run_consistency_tests.sh` — shell wrapper with auto-conversion + torchrun
 
 ### 2. Legacy monolithic script (reference only / 仅供参考)
 
@@ -48,7 +48,7 @@ HF auto-model (input)
 ### Test file structure / 测试文件结构
 
 ```
-tests/
+tests/consistency/
 ├── __init__.py                    # empty package init
 ├── conftest.py                    # 9 session fixtures (209 lines)
 ├── test_consistency_utils.py      # 10 utilities + 11 unit tests (373 lines, DO NOT MODIFY)
@@ -166,37 +166,37 @@ All Python must run inside the container `llava_megatron_container_ax`.
 
 ```bash
 # Inside container, from repo root:
-bash tests/run_consistency_tests.sh
+bash tests/consistency/run_consistency_tests.sh
 ```
 
 ### Run all tests including slow
 
 ```bash
-bash tests/run_consistency_tests.sh -m ""
+bash tests/consistency/run_consistency_tests.sh -m ""
 ```
 
 ### Custom TP/PP
 
 ```bash
-TP=2 PP=1 MASTER_PORT=29501 bash tests/run_consistency_tests.sh
+TP=2 PP=1 MASTER_PORT=29501 bash tests/consistency/run_consistency_tests.sh
 ```
 
 ### Skip conversion (pre-existing mcore checkpoint)
 
 ```bash
-MCORE_CHECKPOINT_PATH=/path/to/existing bash tests/run_consistency_tests.sh
+MCORE_CHECKPOINT_PATH=/path/to/existing bash tests/consistency/run_consistency_tests.sh
 ```
 
 ### Run only unit tests (no GPU needed, works on host)
 
 ```bash
-pytest tests/test_consistency_utils.py -v
+pytest tests/consistency/test_consistency_utils.py -v
 ```
 
 ### Run specific integration test
 
 ```bash
-bash tests/run_consistency_tests.sh -k test_weight_consistency
+bash tests/consistency/run_consistency_tests.sh -k test_weight_consistency
 ```
 
 ## What run_consistency_tests.sh does / run_consistency_tests.sh 做了什么
@@ -204,7 +204,7 @@ bash tests/run_consistency_tests.sh -k test_weight_consistency
 1. Validates `HF_MODEL_PATH` and `TEST_IMAGE_PATH` exist
 2. If `MCORE_CHECKPOINT_PATH` is empty, runs `convert_4b_hf_to_mcore.sh` to generate it
 3. Exports all env vars for conftest.py
-4. Sets `PYTHONPATH` to include `ds/llavaonevision2`, `aiak_megatron`, repo root
+4. Sets `PYTHONPATH` to include `transformers_impl/llavaonevision2`, `aiak_megatron`, repo root
 5. Launches `torchrun --nproc_per_node=$((TP*PP))` with pytest
 
 ## What conftest.py does for Megatron init / conftest.py 如何初始化 Megatron
