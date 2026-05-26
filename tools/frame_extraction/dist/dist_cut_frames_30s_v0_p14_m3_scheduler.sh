@@ -3,10 +3,14 @@
 #
 # Required env vars:
 #   STATE_DIR  - dispatch state dir produced by the launcher (must contain config.env)
+#   SSHPASS    - SSH password for sshpass (do not commit)
 set -euo pipefail
 
 STATE_DIR="${STATE_DIR:?set STATE_DIR to the dispatch state dir from the launcher}"
 source "${STATE_DIR}/config.env"
+
+PASS="${SSHPASS:?set SSHPASS env (do not commit a literal password)}"
+SSH="sshpass -p ${PASS} ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o LogLevel=ERROR"
 
 POLL_INTERVAL="${POLL_INTERVAL:-60}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
@@ -28,12 +32,12 @@ while true; do
     fi
     any_active=1
 
-    input_jsonl="${JSONL_ROOT}/60s_v0_slim_${part}.jsonl"
-    output_jsonl="${OUTPUT_JSONL_ROOT}/60s_v0_slim_done_${part}.jsonl"
+    input_jsonl="${JSONL_ROOT}/30s_v0_slim_${part}.jsonl"
+    output_jsonl="${OUTPUT_JSONL_ROOT}/30s_v0_slim_done_${part}.jsonl"
     total=$(wc -l < "${input_jsonl}" 2>/dev/null || echo 0)
 
-    probe=$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o LogLevel=ERROR -n "${ip}" \
-      "wc -l < '${output_jsonl}' 2>/dev/null || echo 0; pgrep -f '[r]un_cut_frames.py.*60s_v0_slim_${part}\\.jsonl' >/dev/null && echo ALIVE || echo DEAD" 2>/dev/null \
+    probe=$(${SSH} -n root@"${ip}" \
+      "wc -l < '${output_jsonl}' 2>/dev/null || echo 0; pgrep -f '[r]un_cut_frames.py.*${part}\\.jsonl' >/dev/null && echo ALIVE || echo DEAD" 2>/dev/null \
       || printf '0\nUNREACHABLE\n')
     done_n=$(echo "$probe" | sed -n 1p)
     alive=$(echo "$probe" | sed -n 2p)
@@ -66,11 +70,11 @@ while true; do
 
     new_retry=$((retry + 1))
     echo "[scheduler] $(date '+%H:%M:%S') ${part}@${ip} DEAD (${done_n}/${total}), restart ${new_retry}/${MAX_RETRIES}"
-    new_pid=$(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o LogLevel=ERROR -n "${ip}" "
+    new_pid=$(${SSH} -n root@"${ip}" "
       [[ -f /tmp/run_part.sh ]] || exit 1
       bash /tmp/run_part.sh '${part}' >/dev/null 2>&1
       sleep ${RESTART_GRACE}
-      pgrep -f '[r]un_cut_frames.py.*60s_v0_slim_${part}\.jsonl' | head -1
+      pgrep -f '[r]un_cut_frames.py.*${part}\.jsonl' | head -1
     " 2>/dev/null || echo "")
 
     if [[ -z "${new_pid}" ]]; then
