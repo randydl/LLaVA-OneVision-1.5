@@ -6,8 +6,11 @@ from transformers import CLIPImageProcessor
 from transformers import Qwen2VLImageProcessor, AutoProcessor
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import os
+import json
 import torch
+import shutil
 import numpy as np
+from pathlib import Path
 from transformers import Qwen2Tokenizer, logging
 from safetensors.torch import load_file
 from PIL import Image, ImageDraw
@@ -20,6 +23,43 @@ import argparse
 logging.set_verbosity_info()
 logger = logging.get_logger(__name__)
 CUDA_DEVICE=0
+
+def post_configuration(output_path):
+    output_path = Path(output_path)
+
+    config_path = output_path / 'config.json'
+
+    src_dir = Path('transformers_impl/llavaonevision1_5')
+    src_config = src_dir / 'configuration_llavaonevision1_5.py'
+    src_model = src_dir / 'modeling_llavaonevision1_5.py'
+
+    dst_config = output_path / 'configuration_llavaonevision1_5.py'
+    dst_model = output_path / 'modeling_llavaonevision1_5.py'
+
+    auto_map = {
+        'AutoConfig': 'configuration_llavaonevision1_5.Llavaonevision1_5Config',
+        'AutoModel': 'modeling_llavaonevision1_5.LLaVAOneVision1_5_ForConditionalGeneration',
+        'AutoModelForCausalLM': 'modeling_llavaonevision1_5.LLaVAOneVision1_5_ForConditionalGeneration',
+    }
+
+    with config_path.open('r', encoding='utf-8') as f:
+        config = json.load(f)
+
+    config.setdefault('auto_map', {}).update(auto_map)
+
+    with config_path.open('w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+        f.write('\n')
+
+    shutil.copy(src_config, dst_config)
+    shutil.copy(src_model, dst_model)
+
+    text = dst_model.read_text(encoding='utf-8')
+    text = text.replace(
+        'from llavaonevision1_5.configuration_llavaonevision1_5',
+        'from .configuration_llavaonevision1_5'
+    )
+    dst_model.write_text(text, encoding='utf-8')
 
 def cosine_similarity(a, b):
     a, b = a.flatten().float(), b.flatten().float()
@@ -52,7 +92,7 @@ def load_empty_model(llm_path):
 def load_vit_weights(model, vit_path):
     """
     Load ViT weights and copy them to the vision part of LLaVAOneVision1_5_ForConditionalGeneration
-    
+
     Args:
         model: LLaVAOneVision1_5_ForConditionalGeneration
         vit_path: ViT model path
@@ -112,12 +152,12 @@ def load_vit_weights(model, vit_path):
             else:
                 new_state_dict2[key] = value
         return new_state_dict2
-    
+
     vit_weights = convert_state_dict(vit_weights)
     vit_weights.pop("model.visual.post_layernorm.weight")
     vit_weights.pop("model.visual.post_layernorm.bias")
     vit_keys = len(set(vit_weights.keys()))
-    
+
     model_state_dict = model.state_dict()
     total_keys = len(model_state_dict.keys())
     for vit_key in vit_weights:
@@ -135,7 +175,7 @@ def load_vit_weights(model, vit_path):
 def load_adapter_weights(model, adapter_path, cur_len):
     """
     Load Adapter weights and copy them to the corresponding part of LLaVAOneVision1_5_ForConditionalGeneration
-    
+
     Args:
         model: LLaVAOneVision1_5_ForConditionalGeneration model
         adapter_path: Adapter model path
@@ -167,7 +207,7 @@ def load_adapter_weights(model, adapter_path, cur_len):
 
             new_state_dict[key] = value
         return new_state_dict
-    
+
     adapter_weights = convert_state_dict(adapter_weights)
     adapter_keys = len(set(adapter_weights.keys()))
 
@@ -213,7 +253,7 @@ def load_llm_weights(model, llm_path, cur_len):
         llm_weights = torch.load(cache_path, map_location="cpu")
         if "state_dict" in llm_weights:
             llm_weights = llm_weights["state_dict"]
-    
+
     loaded_keys = 0
 
     ADAPTER_KEYS_TO_MODIFY_MAPPING = {
@@ -230,12 +270,12 @@ def load_llm_weights(model, llm_path, cur_len):
 
             new_state_dict[key] = value
         return new_state_dict
-    
+
     llm_weights = convert_state_dict(llm_weights)
     if 'lm_head.weight' not in llm_weights:
         llm_weights['lm_head.weight'] = llm_weights['model.language_model.embed_tokens.weight']
     llm_keys = len(set(llm_weights.keys()))
-    
+
     model_state_dict = model.state_dict()
     for llm_key in llm_weights:
         if llm_key not in model_state_dict:
@@ -244,27 +284,27 @@ def load_llm_weights(model, llm_path, cur_len):
         model_state_dict[llm_key] = llm_weights[llm_key].clone()
         loaded_keys += 1
     assert loaded_keys == llm_keys, f"LLM weight loading incomplete: {loaded_keys}/{llm_keys} parameters loaded"
-    
+
     return llm_weights
 
 def validate_vit_consistency(model, vit_path, img_path):
     """
     Verify the consistency of the ViT component
-    
+
     Args:
         model: LLaVAOneVision1_5_ForConditionalGeneration after merged
         vit_path: original ViT model path
         sample_image: sample image
     """
     print("Verifying consistency of ViT component...")
-    response = requests.get(img_path)
-    sample_image = Image.open(BytesIO(response.content)).convert("RGB")
+    # response = requests.get(img_path)
+    sample_image = Image.open(img_path).convert("RGB")
     sample_image = sample_image.resize((560, 560))
-    
+
     rice_model = MLCDVisionModel.from_pretrained(vit_path, device_map={"": f"cuda:{CUDA_DEVICE}"})
     processor = CLIPImageProcessor.from_pretrained(vit_path, device_map={"": f"cuda:{CUDA_DEVICE}"}, use_fast=True)
     rice_inputs = processor.preprocess(images=sample_image, return_tensors="pt").to(dtype=model.dtype, device=rice_model.device)
-        
+
     rice_model = rice_model.eval()
     print(rice_inputs["pixel_values"].size())
     with torch.no_grad():
@@ -288,7 +328,7 @@ def validate_vit_consistency(model, vit_path, img_path):
     processed_image = image_processor(sample_image, return_tensors="pt")
     with torch.no_grad():
         merged_output = model.visual(processed_image['pixel_values'].to(device=model.device,dtype=model.dtype), grid_thw=image_grid_thw, is_verifying=True)
-        
+
     if isinstance(merged_output, torch.Tensor) and isinstance(rice_vit_features, torch.Tensor):
         diff = (merged_output - rice_vit_features).abs().mean().item()
         print(f"Mean difference of ViT outputs: {diff:.4f}")
@@ -300,7 +340,7 @@ def validate_vit_consistency(model, vit_path, img_path):
 def validate_llm_consistency(model, llm_path, sample_text):
     """
     Verify the consistency of the LLM component
-    
+
     Args:
         model: Merged LLaVAOneVision1_5_ForConditionalGeneration model
         llm_path: Original LLM model path
@@ -314,7 +354,7 @@ def validate_llm_consistency(model, llm_path, sample_text):
 
     # Prepare sample text
     inputs = tokenizer(sample_text, return_tensors="pt").to(model.device)
-    
+
     with torch.no_grad():
         merged_output = model(**inputs).logits
 
@@ -341,6 +381,11 @@ def save_merged_model(model, output_path, tokenizer, image_processor):
     """
     print(f"Saving merged model to: {output_path}")
 
+    try:
+        shutil.rmtree(output_path)
+    except FileNotFoundError:
+        pass
+
     # Create output directory
     os.makedirs(output_path, exist_ok=True)
 
@@ -348,6 +393,8 @@ def save_merged_model(model, output_path, tokenizer, image_processor):
     tokenizer.save_pretrained(output_path)
     image_processor.save_pretrained(output_path)
     model.save_pretrained(output_path)
+
+    post_configuration(output_path)
 
     print("Model saving completed.")
 
@@ -359,11 +406,11 @@ def main(args):
     output_path = args.output_path
     img_path = args.img_path
     sample_text = args.sample_text
-    
+
     # 1. load empty model
     model, processor, tokenizer = load_empty_model(llm_path)
     model.to(dtype=torch.float32)
-    
+
     pretrain_weights = {}
     # 2. load ViT weights
     vit_weights, cur_len = load_vit_weights(model, vit_path)
@@ -390,11 +437,11 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Merge ViT and LLM models")
-    parser.add_argument("--vit_path", type=str, default="DeepGlint-AI/rice-vit-large-patch14-560", help="Path to the ViT model")
-    parser.add_argument("--llm_path", type=str, default="Qwen/Qwen3-4B-Instruct-2507", help="Path to the LLM model")
-    parser.add_argument("--output_path", type=str, default="./checkpoints/merged/LLaVA-OneVision-1.5-4B-stage0", help="Path to save the merged model")
+    parser.add_argument("--vit_path", type=str, default="/nas_train/app.e0016372/models/DeepGlint-AI/rice-vit-large-patch14-560", help="Path to the ViT model")
+    parser.add_argument("--llm_path", type=str, default="/nas_train/app.e0016372/models/Qwen/Qwen3-8B", help="Path to the LLM model")
+    parser.add_argument("--output_path", type=str, default="/nas_train/app.e0016372/models/lmms-lab/LLaVA-OneVision-1.5-8B", help="Path to save the merged model")
     parser.add_argument("--adapter_path", type=str, default="", help="Path to the Adapter model (optional)")
-    parser.add_argument("--img_path", type=str, default="https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg", help="Path to the image file")
+    parser.add_argument("--img_path", type=str, default="/nas_train/app.e0016372/tools/cat.png", help="Path to the image file")
     parser.add_argument("--sample_text", type=str, default="Hello, my dog is cute", help="Sample text for LLM consistency check")
     args = parser.parse_args()
     main(args)

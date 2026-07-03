@@ -545,6 +545,7 @@ class LLaVAOneVision1_5_Attention(nn.Module):
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         input_shape = hidden_states.shape[:-1]
+        bsz = input_shape[0]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
         query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
@@ -558,7 +559,7 @@ class LLaVAOneVision1_5_Attention(nn.Module):
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
-        
+
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
@@ -908,6 +909,7 @@ class Qwen2VLPreTrainedModel(PreTrainedModel):
 class RiceTransformerPretrainedModel(Qwen2VLPreTrainedModel):
     config_class = RiceConfig
     _no_split_modules = ["RiceBlock"]
+    _input_embed_layer = "patch_embed"
 
     def __init__(self, config) -> None:
         super().__init__(config)
@@ -972,7 +974,7 @@ class RiceTransformerPretrainedModel(Qwen2VLPreTrainedModel):
         rotary_pos_emb_full = self.rotary_pos_emb(max_grid_size)
         rotary_pos_emb = rotary_pos_emb_full[pos_ids].flatten(1)
         return rotary_pos_emb
-    
+
     def get_window_index(self, grid_thw):
         window_index: list = []
         cu_window_seqlens: list = [0]
@@ -1023,7 +1025,7 @@ class RiceTransformerPretrainedModel(Qwen2VLPreTrainedModel):
         hidden_states = self.patch_embed(hidden_states)
         rotary_pos_emb = self.rot_pos_emb(grid_thw)
         img_feats = hidden_states.shape[0]
-        
+
         cu_seqlens = torch.repeat_interleave(grid_thw[:, 1] * grid_thw[:, 2], grid_thw[:, 0]).cumsum(
             dim=0,
             # Select dtype based on the following factors:
@@ -1057,7 +1059,7 @@ class RiceTransformerPretrainedModel(Qwen2VLPreTrainedModel):
             new_cu.append(write_ptr)
 
         hidden_states = new_hidden
-        cu_seqlens = torch.tensor(new_cu, device=hidden_states.device, dtype=torch.int32) 
+        cu_seqlens = torch.tensor(new_cu, device=hidden_states.device, dtype=torch.int32)
         rotary_pos_emb = new_rotary_pos_emb
 
         hidden_states = self.pre_layernorm(hidden_states)
@@ -1072,7 +1074,7 @@ class RiceTransformerPretrainedModel(Qwen2VLPreTrainedModel):
                 )
             else:
                 hidden_states = blk(hidden_states, cu_seqlens=cu_seqlens, position_embeddings=position_embeddings)
-        
+
         new_hidden = hidden_states.new_empty((img_feats, D))
 
         for i in range(1, num_segments + 1):
